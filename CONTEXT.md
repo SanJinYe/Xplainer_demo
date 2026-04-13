@@ -2,9 +2,9 @@
 
 ## Project Status
 
-- **Current Phase**: 2 (存储层)
-- **Completed Modules**: models, config
-- **Next Step**: Generate `storage/` (database, migrations, event_store, entity_db, relation_store)
+- **Current Phase**: 3 (处理层)
+- **Completed Modules**: models, config, storage
+- **Next Step**: Generate `indexer/` and `cache/`
 
 ## Design Documents
 
@@ -57,13 +57,19 @@ DB path: ./tailevents.db
 - Date: 2026-04-13
 - Module: models + config
 - Notes: Generated `tailevents.models`, `tailevents.config`, `.env.example`, and aligned package exports.
-- Deviations from design: none
+- Deviations from design: `requirements.txt` kept existing workspace dependencies (`openai`, `requests`, `langgraph`) in addition to the design doc baseline.
 
 ### Session 3
 - Date: 2026-04-13
 - Module: README
 - Notes: Added root `README.md` describing the current Phase 1 deliverables and next step.
 - Deviations from design: none
+
+### Session 4
+- Date: 2026-04-13
+- Module: storage
+- Notes: Generated SQLite connection manager, migrations, event/entity/relation stores, and storage tests. Storage tests passed with the project `.venv`.
+- Deviations from design: added `tailevents/storage/exceptions.py` for explicit storage-layer exceptions; `SQLiteEntityDB.upsert()` uses `ON CONFLICT DO UPDATE` instead of `INSERT OR REPLACE` to avoid foreign-key breakage when relations already reference an entity.
 
 ---
 
