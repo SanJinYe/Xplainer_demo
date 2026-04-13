@@ -1,6 +1,10 @@
 # TailEvents Coding Explanation Agent
 
-当前仓库已完成 Phase 1 的基础层：`models + config`。
+当前仓库已完成：
+
+- Phase 1：`models + config`
+- Phase 2：`storage`
+- Phase 3：`indexer + cache`
 
 ## 现在有什么
 
@@ -21,32 +25,62 @@
 位于 `tailevents/config/`：
 
 - `defaults.py`：默认配置值
-- `settings.py`：`Settings`，基于 `pydantic-settings`
+- `settings.py`：`Settings`
 - `__init__.py`：导出 `Settings` 和 `get_settings()`
 
-### 3. 环境与依赖
+### 3. 存储层
 
-- `.env.example`：环境变量模板
-- `requirements.txt`：当前项目依赖
+位于 `tailevents/storage/`：
+
+- `database.py`：SQLite 连接管理、`initialize_db()`、FastAPI `get_db()`
+- `migrations.py`：`events` / `entities` / `relations` / `explanation_cache` schema
+- `event_store.py`：`TailEvent` 持久化
+- `entity_db.py`：`CodeEntity` 持久化 + FTS5 搜索
+- `relation_store.py`：关系存储
+- `exceptions.py`：存储层异常
+
+### 4. 缓存层
+
+位于 `tailevents/cache/`：
+
+- `cache.py`：`ExplanationCache`
+- `__init__.py`：缓存导出
+
+### 5. 索引层
+
+位于 `tailevents/indexer/`：
+
+- `ast_analyzer.py`：Python AST 提取 entity / relation / imports
+- `diff_parser.py`：unified diff 解析
+- `rename_tracker.py`：基于 `body_hash` / 相似度的 rename 检测
+- `entity_extractor.py`：`CodeEntity` 同步
+- `relation_extractor.py`：关系刷新
+- `pending_queue.py`：半成品代码暂存队列
+- `indexer.py`：主 Indexer 编排
+
+### 6. 测试与依赖
+
+- `tests/test_storage.py`
+- `tests/test_indexer.py`
+- `.env.example`
+- `requirements.txt`
 
 ## 当前状态
 
-- 已完成：`models`、`config`
-- 当前阶段：Phase 2（存储层）
-- 下一步：实现 `storage/`
-  - `database.py`
-  - `migrations.py`
-  - `event_store.py`
-  - `entity_db.py`
-  - `relation_store.py`
+- 已完成：`models`、`config`、`storage`、`cache`、`indexer`
+- 当前阶段：Phase 4（解释层）
+- 下一步：实现 `explanation/`
+  - `engine.py`
+  - `context_assembler.py`
+  - `llm_client.py`
+  - `doc_retriever.py`
+  - `prompts.py`
+  - `formatter.py`
 
 ## 还没有什么
 
 下面这些模块还没有开始实现：
 
-- `storage`
-- `indexer`
-- `cache`
 - `explanation`
 - `query`
 - `api`
@@ -70,11 +104,34 @@ settings = get_settings()
 print(settings.db_path)
 ```
 
-导入模型：
+初始化数据库：
 
 ```python
-from tailevents.models import TailEvent, CodeEntity, Relation
+from tailevents.config import get_settings
+from tailevents.storage import SQLiteConnectionManager, initialize_db
+
+settings = get_settings()
+database = SQLiteConnectionManager(settings.db_path)
+await initialize_db(database)
 ```
+
+创建索引器：
+
+```python
+from tailevents.cache import ExplanationCache
+from tailevents.indexer import Indexer
+from tailevents.storage import SQLiteEntityDB, SQLiteRelationStore
+
+cache = ExplanationCache(database)
+entity_db = SQLiteEntityDB(database)
+relation_store = SQLiteRelationStore(database)
+indexer = Indexer(entity_db=entity_db, relation_store=relation_store, cache=cache)
+```
+
+## 已验证
+
+- `.\.venv\Scripts\python.exe -m pytest tests/test_storage.py tests/test_indexer.py -q`
+- 当前测试在项目 `.venv` 中通过
 
 ## 参考文档
 

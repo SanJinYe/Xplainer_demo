@@ -2,9 +2,9 @@
 
 ## Project Status
 
-- **Current Phase**: 3 (处理层)
-- **Completed Modules**: models, config, storage
-- **Next Step**: Generate `indexer/` and `cache/`
+- **Current Phase**: 4 (解释层)
+- **Completed Modules**: models, config, storage, indexer, cache
+- **Next Step**: Generate `explanation/`
 
 ## Design Documents
 
@@ -70,6 +70,18 @@ DB path: ./tailevents.db
 - Module: storage
 - Notes: Generated SQLite connection manager, migrations, event/entity/relation stores, and storage tests. Storage tests passed with the project `.venv`.
 - Deviations from design: added `tailevents/storage/exceptions.py` for explicit storage-layer exceptions; `SQLiteEntityDB.upsert()` uses `ON CONFLICT DO UPDATE` instead of `INSERT OR REPLACE` to avoid foreign-key breakage when relations already reference an entity.
+
+### Session 5
+- Date: 2026-04-13
+- Module: indexer + cache
+- Notes: Generated SQLite-backed cache, AST-based indexer pipeline, and tests for cache, AST extraction, relations, rename detection, diff parsing, and pending queue behavior. Tests passed with the project `.venv`.
+- Deviations from design: `CodeEntity.tags` temporarily stores hidden `body_hash` / normalized-body metadata for rename detection, avoiding schema changes in Phase 3.
+
+### Session 6
+- Date: 2026-04-13
+- Module: README refresh
+- Notes: Updated `README.md` to reflect completed Phase 1-3 modules and current Phase 4 status.
+- Deviations from design: none
 
 ---
 
