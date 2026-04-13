@@ -123,7 +123,7 @@ class Indexer(IndexerProtocol):
         if self._cache is None:
             return
         for entity_id in dict.fromkeys(entity_ids):
-            await self._cache.invalidate_prefix(f"explanation:{entity_id}:")
+            await self._cache.invalidate_prefix(f"explain:{entity_id}:")
 
     def _select_change(
         self, parsed_changes: list[dict], event_file_path: str

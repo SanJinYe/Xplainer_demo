@@ -2,9 +2,9 @@
 
 ## Project Status
 
-- **Current Phase**: 4 (解释层)
-- **Completed Modules**: models, config, storage, indexer, cache
-- **Next Step**: Generate `explanation/`
+- **Current Phase**: Complete (Requirement A integration done)
+- **Completed Modules**: models, config, storage, indexer, cache, explanation, query, api, graph, ingestion
+- **Next Step**: Optional polish, release packaging, or frontend consumer work
 
 ## Design Documents
 
@@ -81,6 +81,30 @@ DB path: ./tailevents.db
 - Date: 2026-04-13
 - Module: README refresh
 - Notes: Updated `README.md` to reflect completed Phase 1-3 modules and current Phase 4 status.
+- Deviations from design: none
+
+### Session 7
+- Date: 2026-04-13
+- Module: explanation
+- Notes: Generated `tailevents/explanation`, added prompt templates, LLM clients, local doc retriever, context assembly, formatter, explanation engine, and unit tests. Updated indexer cache invalidation prefix to match the explanation cache key scheme. Tests passed with the project `.venv`.
+- Deviations from design: added `tailevents/explanation/exceptions.py` for explicit explanation-layer exceptions.
+
+### Session 8
+- Date: 2026-04-13
+- Module: query + api + graph stub
+- Notes: Generated `tailevents/query`, `tailevents/api`, and `tailevents/graph`, added a FastAPI app with dependency wiring, minimal event ingestion adapter, admin endpoints, cache runtime stats, and API/query integration tests. Tests passed with the project `.venv`.
+- Deviations from design: kept ingestion logic as an API-internal adapter instead of a standalone `ingestion/` module in this phase; implemented admin reindex in the API/container layer by clearing index-side tables and replaying stored events; cache hit/miss metrics are in-memory only and reset on process restart or cache clear.
+
+### Session 9
+- Date: 2026-04-13
+- Module: ingestion + main entry + graph stub alignment
+- Notes: Generated `tailevents/ingestion`, moved API event ingestion onto the formal pipeline, aligned `tailevents/graph/stub.py`, added `tailevents/main.py`, and added ingestion/main/integration tests. Full suite passed with the project `.venv` (`33 passed`).
+- Deviations from design: implemented the entry point at `tailevents/main.py` instead of a repository-root `main.py` per the user’s explicit request; kept `tailevents/graph/graph_service_stub.py` as a compatibility shim that forwards to `tailevents/graph/stub.py`.
+
+### Session 10
+- Date: 2026-04-13
+- Module: README refresh
+- Notes: Rewrote the root `README.md` to reflect the completed Requirement A backend, current runnable entry points, implemented modules, and test coverage.
 - Deviations from design: none
 
 ---

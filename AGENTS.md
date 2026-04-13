@@ -30,11 +30,11 @@ Requirements & rationale: see `docs/requirements.md`
 | storage | `tailevents/storage/` | ✅ |
 | indexer | `tailevents/indexer/` | ✅ |
 | cache | `tailevents/cache/` | ✅ |
-| explanation | `tailevents/explanation/` | 🔲 |
-| query | `tailevents/query/` | 🔲 |
-| api | `tailevents/api/` | 🔲 |
-| graph (stub) | `tailevents/graph/` | 🔲 |
-| ingestion | `tailevents/ingestion/` | 🔲 |
+| explanation | `tailevents/explanation/` | ✅ |
+| query | `tailevents/query/` | ✅ |
+| api | `tailevents/api/` | ✅ |
+| graph (stub) | `tailevents/graph/` | ✅ |
+| ingestion | `tailevents/ingestion/` | ✅ |
 
 Update status to ✅ as each module is completed.
 
