@@ -25,8 +25,8 @@ Requirements & rationale: see `docs/requirements.md`
 
 | Module | Path | Status |
 |--------|------|--------|
-| models | `tailevents/models/` | 🔲 |
-| config | `tailevents/config/` | 🔲 |
+| models | `tailevents/models/` | ✅ |
+| config | `tailevents/config/` | ✅ |
 | storage | `tailevents/storage/` | 🔲 |
 | indexer | `tailevents/indexer/` | 🔲 |
 | cache | `tailevents/cache/` | 🔲 |

@@ -2,9 +2,9 @@
 
 ## Project Status
 
-- **Current Phase**: 1 (基础层)
-- **Completed Modules**: none
-- **Next Step**: Generate `models/` (enums, event, entity, relation, explanation, protocols)
+- **Current Phase**: 2 (存储层)
+- **Completed Modules**: models, config
+- **Next Step**: Generate `storage/` (database, migrations, event_store, entity_db, relation_store)
 
 ## Design Documents
 
@@ -26,6 +26,12 @@ These decisions have been made and should not be revisited:
 | Rename tracking | UUID stable ID + rename_history list on CodeEntity | Handles agent's frequent rename/move operations |
 | LLM backend priority | Ollama (Qwen3:32b) local → Claude API fallback | Minimize latency and cost |
 | Graph service | Stub only in current phase | Interfaces defined in Protocol, implementation deferred to Phase 4 |
+| QueryRouter vs Engine 边界 | QueryRouter 独占查询解析，Engine 只接受 entity_ids | 消除职责重叠 |
+| include_relations 传递 | `explain_entity()` 增加 `include_relations` 参数，从 Request 透传 | 断裂修复 |
+| 外部 docs 触发 | 看 events 的 `external_refs`，不看 entity 的 `is_external` | 覆盖内部函数调外部包的场景 |
+| Event enrichment | 允许一次 `entity_refs` 回填，用独立 `enrich()` 方法 | 保持 append-only 语义 |
+| description 字段 | 统一为 `cached_description` + `description_valid` | 无独立 description |
+| 主键口径 | `entity_id(UUID)` 为主键，全文档统一 | `requirements.md` 需修正 |
 
 ## Environment Constants
 
@@ -42,10 +48,22 @@ DB path: ./tailevents.db
 ## Implementation Log
 
 ### Session 1
-- Date: [TBD]
+- Date: 2026-04-13
+- Module: design docs alignment
+- Notes: Synced locked decisions across `requirements.md`, `system_design.md`, and `CONTEXT.md`; no code generated.
+- Deviations from design: none
+
+### Session 2
+- Date: 2026-04-13
 - Module: models + config
-- Notes: [TBD]
-- Deviations from design: [TBD]
+- Notes: Generated `tailevents.models`, `tailevents.config`, `.env.example`, and aligned package exports.
+- Deviations from design: none
+
+### Session 3
+- Date: 2026-04-13
+- Module: README
+- Notes: Added root `README.md` describing the current Phase 1 deliverables and next step.
+- Deviations from design: none
 
 ---
 

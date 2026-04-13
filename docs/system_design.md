@@ -360,6 +360,7 @@ from typing import Protocol, Optional, runtime_checkable
 @runtime_checkable
 class EventStoreProtocol(Protocol):
     async def put(self, event: "TailEvent") -> str: ...
+    async def enrich(self, event_id: str, entity_refs: list["EntityRef"]) -> None: ...
     async def get(self, event_id: str) -> Optional["TailEvent"]: ...
     async def get_batch(self, event_ids: list[str]) -> list["TailEvent"]: ...
     async def get_by_session(self, session_id: str) -> list["TailEvent"]: ...
@@ -408,11 +409,17 @@ class IndexerResult(Protocol):
 @runtime_checkable
 class ExplanationEngineProtocol(Protocol):
     async def explain_entity(
-        self, entity_id: str, detail_level: str = "summary"
+        self,
+        entity_id: str,
+        detail_level: str = "summary",
+        include_relations: bool = False,
     ) -> "EntityExplanation": ...
-    async def explain_query(
-        self, request: "ExplanationRequest"
-    ) -> "ExplanationResponse": ...
+    async def explain_entities(
+        self,
+        entity_ids: list[str],
+        detail_level: str = "summary",
+        include_relations: bool = False,
+    ) -> list["EntityExplanation"]: ...
 
 @runtime_checkable
 class CacheProtocol(Protocol):
@@ -471,8 +478,8 @@ class IngestionPipeline:
         2. 转换为 TailEvent（生成 event_id、timestamp）
         3. 写入 Event Store
         4. 触发 Indexer.process_event()
-        5. 用 Indexer 结果更新 TailEvent 的 entity_refs
-        6. 再次写入 Event Store（更新 entity_refs）
+        5. 用 Indexer 结果收集 entity_refs
+        6. 调用 EventStore.enrich(event_id, entity_refs) 做一次回填
         7. 执行 post-ingestion hooks
         8. 返回完整的 TailEvent
         """
@@ -654,6 +661,8 @@ CREATE INDEX idx_events_timestamp ON events(timestamp);
 ### 实现要点
 
 - 所有 list/dict 字段序列化为 JSON 存储
+- `enrich(event_id, entity_refs)` 只允许一次回填，使用 `UPDATE ... WHERE event_id = ? AND entity_refs IS NULL`
+- event 的核心字段不可变；`entity_refs` 是唯一允许从空补充为非空的字段
 - `get_batch` 使用 `WHERE event_id IN (...)` 一次查询
 - 全部 async（使用 `aiosqlite`）
 - 单个 SQLite 文件，路径可配置
@@ -814,7 +823,10 @@ class ExplanationEngine:
     ): ...
 
     async def explain_entity(
-        self, entity_id: str, detail_level: str = "summary"
+        self,
+        entity_id: str,
+        detail_level: str = "summary",
+        include_relations: bool = False,
     ) -> EntityExplanation:
         """
         1. 检查缓存 → 命中则返回
@@ -824,21 +836,22 @@ class ExplanationEngine:
            - summary: signature + creation intent
            - detailed: + all modification intents + reasoning
            - trace: + 完整的 event 链 + decision_alternatives
-        5. 如果 is_external → DocRetriever 拉取 package docs
+        5. 遍历关联 events 的 external_refs → DocRetriever 拉取 package docs
         6. 如果 include_relations → RelationStore 获取关联 entities
         7. LLM 调用生成解释
         8. 格式化为 EntityExplanation
         9. 写入缓存
         """
 
-    async def explain_query(self, request: ExplanationRequest) -> ExplanationResponse:
+    async def explain_entities(
+        self,
+        entity_ids: list[str],
+        detail_level: str = "summary",
+        include_relations: bool = False,
+    ) -> list[EntityExplanation]:
         """
-        处理用户的自由文本查询：
-        1. 如果提供了 file_path + line_number → 定位 entity
-        2. 如果提供了 cursor_word → Entity DB 搜索
-        3. 如果只有自由文本 query → Entity DB 全文搜索
-        4. 对每个匹配的 entity 调用 explain_entity
-        5. 汇总为 ExplanationResponse
+        批量解释多个 entity，由 QueryRouter 在完成查询解析后调用。
+        ExplanationEngine 不负责处理 file_path / line_number / cursor_word / 自由文本。
         """
 ```
 
@@ -847,7 +860,7 @@ class ExplanationEngine:
 ```python
 class ContextAssembler:
     """
-    将 entity 信息 + event 链 + 关联 entities + docs 拼装为
+    将 entity 信息 + event 链 + 可选关联 entities + 由 events.external_refs 提取的 docs 拼装为
     LLM 可消费的结构化上下文。
 
     输出格式（示例）：
@@ -915,6 +928,9 @@ class DocRetriever:
     1. 本地缓存（已检索过的文档片段）
     2. 本地 pydoc（已安装的包）
     3. 在线文档抓取（预留接口，延迟实现）
+
+    触发条件：关联 events 中存在 external_refs。
+    不以 entity.is_external 作为触发条件。
     """
     async def retrieve(self, package: str, symbol: str) -> Optional[str]:
         # 先查缓存
@@ -955,7 +971,12 @@ class QueryRouter:
            模糊匹配 entity name/qualified_name
         3. 自由文本 query → Entity DB 全文搜索
            返回 top-k 匹配的 entities
-        4. 将解析出的 entity_ids 传给 ExplanationEngine
+        4. 调用 ExplanationEngine.explain_entities(
+               entity_ids,
+               detail_level=request.detail_level,
+               include_relations=request.include_relations,
+           )
+        5. 将 explanations + request 封装为 ExplanationResponse
         """
 
 class SymbolResolver:
