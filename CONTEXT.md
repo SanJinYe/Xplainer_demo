@@ -107,6 +107,30 @@ DB path: ./tailevents.db
 - Notes: Rewrote the root `README.md` to reflect the completed Requirement A backend, current runnable entry points, implemented modules, and test coverage.
 - Deviations from design: none
 
+### Session 11
+- Date: 2026-04-14
+- Module: openrouter support
+- Notes: Added `openrouter` as an LLM backend option, including config fields, `OpenRouterLLMClient`, factory wiring, `.env.example` entries, and targeted unit tests. Also set `env_ignore_empty=True` in `Settings` so blank optional values in `.env` no longer break startup.
+- Deviations from design: none
+
+### Session 12
+- Date: 2026-04-14
+- Module: README debug usage refresh
+- Notes: Rewrote `README.md` to document current startup methods, `.env` usage, OpenRouter / Ollama / Claude configuration, minimal API flow, and practical debugging entry points.
+- Deviations from design: none
+
+### Session 13
+- Date: 2026-04-14
+- Module: manual testing tutorial
+- Notes: Added `TEST_TUTORIAL.md` with a Swagger-based manual testing flow that simulates a 5-event coding session end-to-end, including entity checks, relation checks, explanation queries, rename verification, and cache-hit verification.
+- Deviations from design: none
+
+### Session 14
+- Date: 2026-04-14
+- Module: repository cleanup + progress snapshot
+- Notes: Tightened `.gitignore` to exclude SQLite files and temp test directories, removed tracked Python cache artifacts from the repository, cleaned local runtime leftovers, and added `CURRENT_PROGRESS.md` as a current-state snapshot without next-step planning. The uncommitted OpenRouter support, README refresh, and manual testing tutorial were also included in the repo update.
+- Deviations from design: none
+
 ---
 
 *Update this file at the end of every coding session.*

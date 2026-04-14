@@ -16,6 +16,11 @@ class Settings(BaseSettings):
     ollama_model: str = defaults.DEFAULT_OLLAMA_MODEL
     claude_api_key: Optional[str] = None
     claude_model: str = defaults.DEFAULT_CLAUDE_MODEL
+    openrouter_api_key: Optional[str] = None
+    openrouter_base_url: str = defaults.DEFAULT_OPENROUTER_BASE_URL
+    openrouter_model: str = defaults.DEFAULT_OPENROUTER_MODEL
+    openrouter_site_url: Optional[str] = defaults.DEFAULT_OPENROUTER_SITE_URL
+    openrouter_app_name: Optional[str] = defaults.DEFAULT_OPENROUTER_APP_NAME
 
     proxy_url: Optional[str] = defaults.DEFAULT_PROXY_URL
     no_proxy_hosts: list[str] = Field(
@@ -37,6 +42,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_prefix="TAILEVENTS_",
+        env_ignore_empty=True,
         extra="ignore",
     )
 

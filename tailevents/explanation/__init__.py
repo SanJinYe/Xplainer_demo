@@ -15,6 +15,7 @@ from tailevents.explanation.llm_client import (
     ClaudeLLMClient,
     LLMClientFactory,
     OllamaLLMClient,
+    OpenRouterLLMClient,
 )
 
 __all__ = [
@@ -29,5 +30,6 @@ __all__ = [
     "LLMClientError",
     "LLMClientFactory",
     "OllamaLLMClient",
+    "OpenRouterLLMClient",
     "UnsupportedLLMBackendError",
 ]

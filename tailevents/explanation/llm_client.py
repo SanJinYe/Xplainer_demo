@@ -136,6 +136,97 @@ class ClaudeLLMClient:
         return content
 
 
+class OpenRouterLLMClient:
+    """Async client for the OpenRouter Chat Completions API."""
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        base_url: str,
+        proxy_url: Optional[str] = None,
+        site_url: Optional[str] = None,
+        app_name: Optional[str] = None,
+        timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    ):
+        self._api_key = api_key
+        self._model = model
+        self._base_url = base_url.rstrip("/")
+        self._proxy_url = proxy_url
+        self._site_url = site_url
+        self._app_name = app_name
+        self._timeout = timeout
+
+    async def generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 1000,
+        temperature: float = 0.3,
+    ) -> str:
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        if self._site_url:
+            headers["HTTP-Referer"] = self._site_url
+        if self._app_name:
+            headers["X-Title"] = self._app_name
+
+        payload = {
+            "model": self._model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        }
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=self._timeout,
+                proxy=self._proxy_url,
+                trust_env=True,
+            ) as client:
+                response = await client.post(
+                    f"{self._base_url}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                )
+                response.raise_for_status()
+        except httpx.HTTPStatusError as error:
+            raise LLMClientError(
+                f"OpenRouter request failed with status {error.response.status_code}"
+            ) from error
+        except httpx.HTTPError as error:
+            raise LLMClientError(f"OpenRouter request failed: {error}") from error
+
+        data = response.json()
+        choices = data.get("choices", [])
+        if not choices:
+            raise LLMClientError("OpenRouter returned an empty response")
+
+        message = choices[0].get("message", {})
+        content = self._extract_message_content(message.get("content"))
+        if not content:
+            raise LLMClientError("OpenRouter returned an empty response")
+        return content
+
+    def _extract_message_content(self, content: Any) -> str:
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            text_parts = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text = str(block.get("text", "")).strip()
+                    if text:
+                        text_parts.append(text)
+            return "\n".join(text_parts).strip()
+        return ""
+
+
 class LLMClientFactory:
     """Create an LLM client from settings-like objects."""
 
@@ -165,6 +256,34 @@ class LLMClientFactory:
                 proxy_url=LLMClientFactory._get_value(settings, "proxy_url"),
             )
 
+        if backend == "openrouter":
+            api_key = LLMClientFactory._get_value(settings, "openrouter_api_key")
+            if not api_key:
+                raise UnsupportedLLMBackendError(
+                    "OpenRouter backend requires TAILEVENTS_OPENROUTER_API_KEY"
+                )
+            model = str(
+                LLMClientFactory._get_value(settings, "openrouter_model", "")
+            ).strip()
+            if not model:
+                raise UnsupportedLLMBackendError(
+                    "OpenRouter backend requires TAILEVENTS_OPENROUTER_MODEL"
+                )
+            return OpenRouterLLMClient(
+                api_key=str(api_key),
+                model=model,
+                base_url=str(
+                    LLMClientFactory._get_value(
+                        settings,
+                        "openrouter_base_url",
+                        "",
+                    )
+                ),
+                proxy_url=LLMClientFactory._get_value(settings, "proxy_url"),
+                site_url=LLMClientFactory._get_value(settings, "openrouter_site_url"),
+                app_name=LLMClientFactory._get_value(settings, "openrouter_app_name"),
+            )
+
         raise UnsupportedLLMBackendError(f"Unsupported LLM backend: {backend}")
 
     @staticmethod
@@ -174,4 +293,9 @@ class LLMClientFactory:
         return getattr(settings, key, default)
 
 
-__all__ = ["ClaudeLLMClient", "LLMClientFactory", "OllamaLLMClient"]
+__all__ = [
+    "ClaudeLLMClient",
+    "LLMClientFactory",
+    "OllamaLLMClient",
+    "OpenRouterLLMClient",
+]

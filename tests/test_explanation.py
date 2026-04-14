@@ -2,10 +2,21 @@ from datetime import datetime, timedelta
 
 import pytest
 import pytest_asyncio
+import httpx
 
 from tailevents.cache import ExplanationCache
-from tailevents.explanation import ContextAssembler, ExplanationEngine, ExplanationFormatter
-from tailevents.explanation.exceptions import EntityExplanationNotFoundError
+from tailevents.config import Settings
+from tailevents.explanation import (
+    ContextAssembler,
+    ExplanationEngine,
+    ExplanationFormatter,
+    LLMClientFactory,
+    OpenRouterLLMClient,
+)
+from tailevents.explanation.exceptions import (
+    EntityExplanationNotFoundError,
+    UnsupportedLLMBackendError,
+)
 from tailevents.models.entity import CodeEntity, EventRef, ParamInfo
 from tailevents.models.enums import (
     ActionType,
@@ -463,3 +474,88 @@ async def test_explain_entities_preserves_input_order(explanation_bundle):
         second_entity.entity_id,
         seeded["entity"].entity_id,
     ]
+
+
+@pytest.mark.asyncio
+async def test_openrouter_client_parses_response(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "openrouter generated explanation"
+                        }
+                    }
+                ]
+            }
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            captured["client_kwargs"] = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, exc_tb):
+            return None
+
+        async def post(self, url: str, headers: dict, json: dict):
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["json"] = json
+            return FakeResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+    client = OpenRouterLLMClient(
+        api_key="test-key",
+        model="openai/gpt-4o-mini",
+        base_url="https://openrouter.ai/api/v1",
+        proxy_url="http://127.0.0.1:7897",
+        site_url="https://example.com",
+        app_name="TailEvents",
+    )
+    content = await client.generate(
+        system_prompt="system prompt",
+        user_prompt="user prompt",
+        max_tokens=256,
+        temperature=0.2,
+    )
+
+    assert content == "openrouter generated explanation"
+    assert captured["url"] == "https://openrouter.ai/api/v1/chat/completions"
+    assert captured["headers"]["Authorization"] == "Bearer test-key"
+    assert captured["headers"]["HTTP-Referer"] == "https://example.com"
+    assert captured["headers"]["X-Title"] == "TailEvents"
+    assert captured["json"]["model"] == "openai/gpt-4o-mini"
+    assert captured["client_kwargs"]["proxy"] == "http://127.0.0.1:7897"
+
+
+def test_llm_client_factory_supports_openrouter():
+    settings = Settings(
+        llm_backend="openrouter",
+        openrouter_api_key="test-key",
+        openrouter_model="openai/gpt-4o-mini",
+        openrouter_base_url="https://openrouter.ai/api/v1",
+    )
+
+    client = LLMClientFactory.create(settings)
+
+    assert isinstance(client, OpenRouterLLMClient)
+
+
+def test_llm_client_factory_rejects_missing_openrouter_key():
+    settings = Settings(
+        llm_backend="openrouter",
+        openrouter_model="openai/gpt-4o-mini",
+        openrouter_base_url="https://openrouter.ai/api/v1",
+    )
+
+    with pytest.raises(UnsupportedLLMBackendError):
+        LLMClientFactory.create(settings)
