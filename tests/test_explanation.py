@@ -8,6 +8,7 @@ from tailevents.cache import ExplanationCache
 from tailevents.config import Settings
 from tailevents.explanation import (
     ContextAssembler,
+    EXPLANATION_PROMPT_VERSION,
     ExplanationEngine,
     ExplanationFormatter,
     LLMClientFactory,
@@ -280,7 +281,8 @@ def test_context_assembler_handles_detail_levels():
     assert "# Creation Context" in summary
     assert "# Modification History" not in summary
     assert "# Modification History" in detailed
-    assert "# Relations" in detailed
+    assert "# Related Entities" in detailed
+    assert "This entity calls:" in detailed
     assert "# External Dependencies" in detailed
     assert "# Event Trace" in trace
     assert "Alternatives: 默认超时, 调用方传参" in trace
@@ -324,6 +326,68 @@ def test_formatter_falls_back_for_malformed_output():
     assert explanation.param_explanations is None
 
 
+def test_formatter_strips_backticks_from_param_names():
+    formatter = ExplanationFormatter()
+    entity = CodeEntity(
+        name="fetch_data",
+        qualified_name="fetch_data",
+        entity_type=EntityType.FUNCTION,
+        file_path="client.py",
+    )
+
+    explanation = formatter.format(
+        entity,
+        """作用
+读取远程数据
+参数
+- `url`: 目标地址
+- ``timeout``: 超时时间
+返回值
+返回解析后的结果
+使用场景
+API 请求
+设计背景
+保持网络访问统一
+""",
+    )
+
+    assert explanation.param_explanations == {
+        "url": "目标地址",
+        "timeout": "超时时间",
+    }
+
+
+def test_formatter_parses_multiline_param_blocks():
+    formatter = ExplanationFormatter()
+    entity = CodeEntity(
+        name="fetch_api_data",
+        qualified_name="fetch_api_data",
+        entity_type=EntityType.FUNCTION,
+        file_path="client.py",
+    )
+
+    explanation = formatter.format(
+        entity,
+        """作用
+访问远端 API。
+参数
+`url`
+- 类型：字符串 URL
+- 作用：指定要请求的远端地址
+返回值
+返回响应结果。
+使用场景
+在处理流程前获取原始数据。
+设计背景
+为了统一远端访问入口。
+""",
+    )
+
+    assert explanation.param_explanations == {
+        "url": "类型：字符串 URL 作用：指定要请求的远端地址",
+    }
+
+
 @pytest.mark.asyncio
 async def test_engine_cache_miss_then_hit(explanation_bundle):
     seeded = await seed_explanation_data(explanation_bundle)
@@ -356,7 +420,7 @@ async def test_engine_cache_miss_then_hit(explanation_bundle):
     assert len(first.modification_history) == 1
     assert len(llm_client.calls) == 1
     assert await explanation_bundle["cache"].get(
-        f"explain:{seeded['entity'].entity_id}:detailed:1"
+        f"explain:{EXPLANATION_PROMPT_VERSION}:{seeded['entity'].entity_id}:detailed:1"
     ) is not None
 
     stored_entity = await explanation_bundle["entity_db"].get(seeded["entity"].entity_id)
@@ -539,6 +603,7 @@ async def test_openrouter_client_parses_response(monkeypatch):
 
 def test_llm_client_factory_supports_openrouter():
     settings = Settings(
+        _env_file=None,
         llm_backend="openrouter",
         openrouter_api_key="test-key",
         openrouter_model="openai/gpt-4o-mini",
@@ -552,6 +617,7 @@ def test_llm_client_factory_supports_openrouter():
 
 def test_llm_client_factory_rejects_missing_openrouter_key():
     settings = Settings(
+        _env_file=None,
         llm_backend="openrouter",
         openrouter_model="openai/gpt-4o-mini",
         openrouter_base_url="https://openrouter.ai/api/v1",

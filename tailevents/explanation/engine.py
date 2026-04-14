@@ -9,6 +9,7 @@ from tailevents.explanation.exceptions import (
 )
 from tailevents.explanation.formatter import ExplanationFormatter
 from tailevents.explanation.prompts import (
+    EXPLANATION_PROMPT_VERSION,
     EXTERNAL_DOC_PROMPT,
     PROMPT_TEMPLATES,
     SYSTEM_PROMPT,
@@ -280,7 +281,10 @@ class ExplanationEngine(ExplanationEngineProtocol):
     def _build_cache_key(
         self, entity_id: str, detail_level: str, include_relations: bool
     ) -> str:
-        return f"explain:{entity_id}:{detail_level}:{int(include_relations)}"
+        return (
+            f"explain:{EXPLANATION_PROMPT_VERSION}:"
+            f"{entity_id}:{detail_level}:{int(include_relations)}"
+        )
 
     def _validate_detail_level(self, detail_level: str) -> None:
         if detail_level not in VALID_DETAIL_LEVELS:

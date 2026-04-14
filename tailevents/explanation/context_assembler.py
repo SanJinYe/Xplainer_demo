@@ -1,5 +1,7 @@
 """Assemble structured context for explanation prompts."""
 
+from collections import defaultdict
+
 from tailevents.explanation.exceptions import InvalidDetailLevelError
 from tailevents.models.entity import CodeEntity
 from tailevents.models.event import TailEvent
@@ -9,7 +11,7 @@ VALID_DETAIL_LEVELS = {"summary", "detailed", "trace"}
 
 
 class ContextAssembler:
-    """Convert entity metadata, events, relations, and docs into a prompt context."""
+    """Convert entity metadata, events, relations, and docs into prompt context."""
 
     def assemble(
         self,
@@ -31,8 +33,9 @@ class ContextAssembler:
         if detail_level in {"detailed", "trace"}:
             sections.append(self._format_modification_history(ordered_events))
 
-        if related_entities:
-            sections.append(self._format_relations(related_entities))
+        relation_section = self._format_relations(related_entities)
+        if relation_section:
+            sections.append(relation_section)
 
         if doc_snippets:
             sections.append(self._format_external_docs(doc_snippets))
@@ -92,17 +95,55 @@ class ContextAssembler:
         return "\n".join(lines)
 
     def _format_relations(self, related_entities: list[dict]) -> str:
-        lines = ["# Relations"]
+        if not related_entities:
+            return ""
+
+        grouped: dict[str, list[str]] = defaultdict(list)
         for relation in related_entities:
-            lines.append(
-                (
-                    f"- {relation['direction']} {relation['relation_type']}: "
-                    f"{relation['qualified_name']} ({relation['entity_type']})"
-                )
-            )
-            if relation.get("context"):
-                lines.append(f"  Context: {relation['context']}")
+            label = self._relation_group_label(relation)
+            item = self._relation_item(relation)
+            if item not in grouped[label]:
+                grouped[label].append(item)
+
+        preferred_order = [
+            "This entity is called by:",
+            "This entity calls:",
+            "Incoming relations:",
+            "Outgoing relations:",
+        ]
+        lines = ["# Related Entities"]
+        for label in preferred_order:
+            items = grouped.get(label, [])
+            if not items:
+                continue
+            lines.append(label)
+            lines.extend(f"- {item}" for item in items)
         return "\n".join(lines)
+
+    def _relation_group_label(self, relation: dict) -> str:
+        direction = relation.get("direction")
+        relation_type = relation.get("relation_type")
+        if direction == "incoming" and relation_type == "calls":
+            return "This entity is called by:"
+        if direction == "outgoing" and relation_type == "calls":
+            return "This entity calls:"
+        if direction == "incoming":
+            return "Incoming relations:"
+        return "Outgoing relations:"
+
+    def _relation_item(self, relation: dict) -> str:
+        base = f"{relation['qualified_name']} ({relation['entity_type']})"
+        relation_type = relation.get("relation_type")
+        direction = relation.get("direction")
+        if not (
+            (direction == "incoming" and relation_type == "calls")
+            or (direction == "outgoing" and relation_type == "calls")
+        ):
+            base = f"{relation_type}: {base}"
+        context = relation.get("context")
+        if context:
+            return f"{base} - {context}"
+        return base
 
     def _format_external_docs(self, doc_snippets: list[dict]) -> str:
         lines = ["# External Dependencies"]

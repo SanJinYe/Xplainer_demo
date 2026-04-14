@@ -4,7 +4,7 @@
 
 - **Current Phase**: Complete (Requirement A integration done)
 - **Completed Modules**: models, config, storage, indexer, cache, explanation, query, api, graph, ingestion
-- **Next Step**: Optional polish, release packaging, or frontend consumer work
+- **Next Step**: Frontend consumer work, release packaging, or selective warning cleanup
 
 ## Design Documents
 
@@ -130,6 +130,12 @@ DB path: ./tailevents.db
 - Module: repository cleanup + progress snapshot
 - Notes: Tightened `.gitignore` to exclude SQLite files and temp test directories, removed tracked Python cache artifacts from the repository, cleaned local runtime leftovers, and added `CURRENT_PROGRESS.md` as a current-state snapshot without next-step planning. The uncommitted OpenRouter support, README refresh, and manual testing tutorial were also included in the repo update.
 - Deviations from design: none
+
+### Session 15
+- Date: 2026-04-14
+- Module: baseline confirmation + explanation quality convergence
+- Notes: Fixed the OpenRouter factory test to ignore repo `.env` pollution, added `tests/test_e2e_smoke.py` for domain-layer ingestion/index/explanation/cache coverage, introduced grouped relation context in explanation prompts, hardened formatter parsing for backtick-wrapped and multiline parameter blocks, versioned explanation cache keys with `EXPLANATION_PROMPT_VERSION = "v2"`, generated `explanation_prompt_audit.md`, recorded real-LLM validation in `explanation_quality_check.md`, and regenerated `regression_report.txt` with a green full-suite baseline (`39 passed, 0 skipped, 0 failed`).
+- Deviations from design: added a small formatter robustness improvement for multiline parameter blocks based on validation findings; no API or schema changes.
 
 ---
 

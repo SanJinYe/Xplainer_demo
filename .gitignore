@@ -8,3 +8,7 @@ __pycache__/
 *.db-wal
 .tmp/
 pytest-cache-files-*/
+NEXT_PHASE_TASK.md
+regression_report.txt
+explanation_prompt_audit.md
+explanation_quality_check.md

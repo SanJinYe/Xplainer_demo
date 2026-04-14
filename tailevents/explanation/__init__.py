@@ -17,12 +17,14 @@ from tailevents.explanation.llm_client import (
     OllamaLLMClient,
     OpenRouterLLMClient,
 )
+from tailevents.explanation.prompts import EXPLANATION_PROMPT_VERSION
 
 __all__ = [
     "ClaudeLLMClient",
     "ContextAssembler",
     "DocRetriever",
     "EntityExplanationNotFoundError",
+    "EXPLANATION_PROMPT_VERSION",
     "ExplanationEngine",
     "ExplanationError",
     "ExplanationFormatter",

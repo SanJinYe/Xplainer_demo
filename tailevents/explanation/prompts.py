@@ -1,5 +1,7 @@
 """Prompt templates for explanation generation."""
 
+EXPLANATION_PROMPT_VERSION = "v2"
+
 SYSTEM_PROMPT = """
 你是一个代码解释生成器。
 
@@ -77,6 +79,7 @@ PROMPT_TEMPLATES = {
 
 __all__ = [
     "DETAILED_PROMPT",
+    "EXPLANATION_PROMPT_VERSION",
     "EXTERNAL_DOC_PROMPT",
     "PROMPT_TEMPLATES",
     "SUMMARY_PROMPT",

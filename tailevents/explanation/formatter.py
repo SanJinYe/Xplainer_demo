@@ -9,7 +9,7 @@ from tailevents.models.explanation import EntityExplanation
 
 SECTION_ORDER = ["作用", "参数", "返回值", "使用场景", "设计背景"]
 SECTION_PATTERN = re.compile(
-    r"^\s{0,3}(?:[#>*-]+\s*)?(作用|参数|返回值|使用场景|设计背景)\s*[:：]?\s*(.*)$"
+    r"^\s{0,3}(?:(?:#{1,6}|>)\s*)?(作用|参数|返回值|使用场景|设计背景)\s*[:：]?\s*(.*)$"
 )
 
 
@@ -79,20 +79,52 @@ class ExplanationFormatter:
             return None
 
         parsed: dict[str, str] = {}
+        current_name: Optional[str] = None
+        current_parts: list[str] = []
+
+        def flush_current() -> None:
+            nonlocal current_name, current_parts
+            if current_name and current_parts:
+                parsed[current_name] = " ".join(part for part in current_parts if part).strip()
+            current_name = None
+            current_parts = []
+
         for line in text.splitlines():
             normalized = line.strip().lstrip("-*").strip()
             if not normalized:
                 continue
+
             separator = "：" if "：" in normalized else ":"
-            if separator not in normalized:
+            if separator in normalized:
+                name, description = normalized.split(separator, 1)
+                name = self._normalize_param_name(name)
+                description = description.strip()
+                if name in {"类型", "作用", "说明", "含义"} and current_name:
+                    current_parts.append(f"{name}：{description}")
+                    continue
+                flush_current()
+                if name and description:
+                    parsed[name] = description
                 continue
-            name, description = normalized.split(separator, 1)
-            name = name.strip()
-            description = description.strip()
-            if name and description:
-                parsed[name] = description
+
+            candidate_name = self._normalize_param_name(normalized)
+            if candidate_name:
+                flush_current()
+                current_name = candidate_name
+                continue
+
+            if current_name:
+                current_parts.append(normalized)
+
+        flush_current()
 
         return parsed or None
+
+    def _normalize_param_name(self, name: str) -> str:
+        normalized = name.strip()
+        while normalized.startswith("`") and normalized.endswith("`") and len(normalized) >= 2:
+            normalized = normalized[1:-1].strip()
+        return normalized
 
     def _normalize_section(self, text: Optional[str]) -> Optional[str]:
         if not text:
