@@ -137,6 +137,18 @@ DB path: ./tailevents.db
 - Notes: Fixed the OpenRouter factory test to ignore repo `.env` pollution, added `tests/test_e2e_smoke.py` for domain-layer ingestion/index/explanation/cache coverage, introduced grouped relation context in explanation prompts, hardened formatter parsing for backtick-wrapped and multiline parameter blocks, versioned explanation cache keys with `EXPLANATION_PROMPT_VERSION = "v2"`, generated `explanation_prompt_audit.md`, recorded real-LLM validation in `explanation_quality_check.md`, and regenerated `regression_report.txt` with a green full-suite baseline (`39 passed, 0 skipped, 0 failed`).
 - Deviations from design: added a small formatter robustness improvement for multiline parameter blocks based on validation findings; no API or schema changes.
 
+### Session 16
+- Date: 2026-04-15
+- Module: load testing
+- Notes: Added `scripts/loadtest.py` to run repeatable HTTP load tests against the FastAPI app with two scenarios: `ingest` and `hot-cache-explain`. The script can spawn a temporary local app process, seed smoke data, clear/warm explanation cache, collect latency/throughput/success metrics, and write JSON summaries under `loadtest-results/`. Ran baseline and mid-size local load tests successfully. Observed that `ingest` scales with noticeably higher latency under concurrency while `hot-cache-explain` remains fast with a near-100% cache-hit path after warmup.
+- Deviations from design: none; this session added tooling only and did not change application behavior.
+
+### Session 17
+- Date: 2026-04-15
+- Module: mixed workload load testing
+- Notes: Extended `scripts/loadtest.py` with a new `mixed-workload` scenario plus CLI options for `--mix`, `--seed-count`, and `--random-seed`. Added unique seed-code generation so mixed-workload can prebuild a stable pool of explain targets, warm their caches, execute a deterministic `70/20/10` explain/write/query mix, and report per-operation latency and cache-hit metrics. Validated the script with a small smoke run and with the planned baseline (`100/10`) and mid-size (`300/20`) mixed-workload runs using spawned local app instances.
+- Deviations from design: increased the script's default per-request timeout to 120 seconds and limited mixed-workload cache warmup to a small concurrency of 2 so the planned default commands can complete against the current real LLM backend.
+
 ---
 
 *Update this file at the end of every coding session.*
