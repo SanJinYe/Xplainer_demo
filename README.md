@@ -1,5 +1,18 @@
 # TailEvents Coding Explanation Agent
 
+## VSCode Extension MVP
+
+- Frontend MVP now lives in `vscode-extension/` as a VSCode extension.
+- Supported UI flows:
+  - hover summary for indexed Python entities
+  - sidebar explanation panel with timeline and related entities
+- Manual test quickstart:
+  - start backend: `cd vscode-extension && npm run test:manual:backend`
+  - seed test data: `cd vscode-extension && npm run test:manual:prepare`
+  - launch extension host: open the repo root in VSCode and run `F5 -> Run Extension`
+  - test target file: `vscode-extension/manual_test_target.py`
+- Workspace debug config is provided in `.vscode/launch.json` and `.vscode/tasks.json`.
+
 TailEvents 是一个面向 AI 编码会话的可解释性后端。它接收编码代理产生的结构化事件，按函数、类、方法建立索引，并在查询时生成“这段代码做什么、为什么这样写、和谁有关”的解释。
 
 ## 当前状态
