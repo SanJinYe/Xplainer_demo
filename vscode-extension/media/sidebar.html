@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+        http-equiv="Content-Security-Policy"
+        content="default-src 'none'; style-src 'nonce-__NONCE__'; script-src 'nonce-__NONCE__';"
+    />
+    <title>TailEvents</title>
+    <style nonce="__NONCE__">
+        :root {
+            color-scheme: light dark;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background: var(--vscode-editor-background);
+            color: var(--vscode-editor-foreground);
+            font-family: var(--vscode-font-family);
+            font-size: var(--vscode-editor-font-size);
+            line-height: 1.5;
+        }
+
+        #app {
+            padding: 16px;
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        .title-bar {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-bottom: 20px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--vscode-list-hoverBackground);
+        }
+
+        h2,
+        h3,
+        p,
+        ul {
+            margin: 0;
+        }
+
+        .section {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .muted {
+            color: var(--vscode-descriptionForeground, var(--vscode-editor-foreground));
+            opacity: 0.8;
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 2px 8px;
+            border-radius: 999px;
+            background: var(--vscode-badge-background);
+            color: var(--vscode-badge-foreground);
+            font-size: 0.9em;
+        }
+
+        .lead {
+            font-size: 1.05em;
+            font-weight: 600;
+        }
+
+        .text-block {
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .timeline,
+        .related-list {
+            list-style: none;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .timeline-item,
+        .related-item {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            padding: 10px 12px;
+            border: 1px solid var(--vscode-list-hoverBackground);
+            border-radius: 8px;
+            background: transparent;
+        }
+
+        .row {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .link-button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: flex-start;
+            border: none;
+            padding: 0;
+            background: transparent;
+            color: var(--vscode-textLink-foreground);
+            cursor: pointer;
+            text-align: left;
+            font: inherit;
+        }
+
+        .link-button:hover {
+            text-decoration: underline;
+        }
+
+        .state {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .retry-button {
+            align-self: flex-start;
+            border: 1px solid var(--vscode-list-hoverBackground);
+            background: transparent;
+            color: var(--vscode-textLink-foreground);
+            border-radius: 6px;
+            padding: 6px 10px;
+            cursor: pointer;
+            font: inherit;
+        }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <section id="empty-state" class="state hidden">
+            <p id="empty-text" class="muted"></p>
+        </section>
+
+        <section id="loading-state" class="state hidden">
+            <p id="loading-text"></p>
+        </section>
+
+        <section id="error-state" class="state hidden">
+            <p id="error-text"></p>
+            <button id="retry-button" class="retry-button" type="button">Retry</button>
+        </section>
+
+        <section id="content" class="hidden">
+            <header class="title-bar">
+                <div class="row">
+                    <h2 id="entity-name"></h2>
+                    <span id="entity-type" class="badge"></span>
+                </div>
+                <p id="entity-location" class="muted"></p>
+                <p id="entity-signature" class="text-block hidden"></p>
+                <p id="event-count" class="muted"></p>
+            </header>
+
+            <section class="section">
+                <h3>Explanation</h3>
+                <p id="summary-text" class="lead hidden"></p>
+                <p id="detail-text" class="text-block hidden"></p>
+            </section>
+
+            <section class="section">
+                <h3>History</h3>
+                <p id="history-fallback" class="muted hidden">History unavailable.</p>
+                <ul id="timeline-list" class="timeline"></ul>
+            </section>
+
+            <section class="section">
+                <h3>Related Entities</h3>
+                <p id="related-empty" class="muted hidden">No related entities.</p>
+                <ul id="related-list" class="related-list"></ul>
+            </section>
+        </section>
+    </div>
+
+    <script nonce="__NONCE__">
+        const vscode = acquireVsCodeApi();
+
+        const content = document.getElementById("content");
+        const emptyState = document.getElementById("empty-state");
+        const loadingState = document.getElementById("loading-state");
+        const errorState = document.getElementById("error-state");
+        const retryButton = document.getElementById("retry-button");
+
+        retryButton.addEventListener("click", () => {
+            vscode.postMessage({ type: "refresh" });
+        });
+
+        window.addEventListener("message", (event) => {
+            const message = event.data;
+            switch (message.type) {
+                case "state:empty":
+                    showEmpty(message.message);
+                    break;
+                case "state:loading":
+                    showLoading(message.label);
+                    break;
+                case "state:error":
+                    showError(message.error, message.baseUrl);
+                    break;
+                case "state:update":
+                    renderContent(message.data);
+                    break;
+                default:
+                    break;
+            }
+        });
+
+        document.addEventListener("DOMContentLoaded", () => {
+            vscode.postMessage({ type: "ready" });
+        });
+
+        function hideAllStates() {
+            content.classList.add("hidden");
+            emptyState.classList.add("hidden");
+            loadingState.classList.add("hidden");
+            errorState.classList.add("hidden");
+        }
+
+        function showEmpty(message) {
+            hideAllStates();
+            document.getElementById("empty-text").textContent = message;
+            emptyState.classList.remove("hidden");
+        }
+
+        function showLoading(label) {
+            hideAllStates();
+            const loadingText = label ? `Loading ${label}...` : "Loading...";
+            document.getElementById("loading-text").textContent = loadingText;
+            loadingState.classList.remove("hidden");
+        }
+
+        function showError(error, baseUrl) {
+            hideAllStates();
+            document.getElementById("error-text").textContent = formatError(error, baseUrl);
+            errorState.classList.remove("hidden");
+        }
+
+        function renderContent(data) {
+            hideAllStates();
+            content.classList.remove("hidden");
+
+            document.getElementById("entity-name").textContent = data.entityName;
+            document.getElementById("entity-type").textContent = data.entityType;
+            document.getElementById("entity-location").textContent = formatLocation(data.filePath, data.lineStart, data.lineEnd);
+
+            const signature = document.getElementById("entity-signature");
+            toggleText(signature, data.signature);
+
+            const eventCount = document.getElementById("event-count");
+            eventCount.textContent = `${data.eventCount} events recorded`;
+
+            const summary = document.getElementById("summary-text");
+            const detail = document.getElementById("detail-text");
+            const hasDistinctDetail =
+                data.detailedExplanation &&
+                data.detailedExplanation.trim().length > 0 &&
+                data.detailedExplanation.trim() !== data.summary.trim();
+
+            toggleText(summary, data.summary);
+            toggleText(detail, hasDistinctDetail ? data.detailedExplanation : null);
+
+            renderTimeline(data.timeline, data.historyAvailable);
+            renderRelatedEntities(data.relatedEntities);
+        }
+
+        function renderTimeline(timeline, historyAvailable) {
+            const list = document.getElementById("timeline-list");
+            const fallback = document.getElementById("history-fallback");
+            list.replaceChildren();
+
+            if (!historyAvailable) {
+                fallback.classList.remove("hidden");
+                return;
+            }
+
+            fallback.classList.add("hidden");
+
+            if (!timeline.length) {
+                const item = document.createElement("li");
+                item.className = "timeline-item muted";
+                item.textContent = "No recorded events.";
+                list.appendChild(item);
+                return;
+            }
+
+            for (const entry of timeline) {
+                const item = document.createElement("li");
+                item.className = "timeline-item";
+
+                const topRow = document.createElement("div");
+                topRow.className = "row";
+
+                const badge = document.createElement("span");
+                badge.className = "badge";
+                badge.textContent = entry.actionType;
+
+                const timestamp = document.createElement("span");
+                timestamp.className = "muted";
+                timestamp.textContent = formatTimestamp(entry.timestamp);
+
+                topRow.appendChild(badge);
+                topRow.appendChild(timestamp);
+
+                const intent = document.createElement("p");
+                intent.textContent = entry.intent;
+
+                item.appendChild(topRow);
+                item.appendChild(intent);
+
+                if (entry.renameLabel) {
+                    const rename = document.createElement("p");
+                    rename.className = "muted";
+                    rename.textContent = entry.renameLabel;
+                    item.appendChild(rename);
+                }
+
+                list.appendChild(item);
+            }
+        }
+
+        function renderRelatedEntities(relatedEntities) {
+            const list = document.getElementById("related-list");
+            const empty = document.getElementById("related-empty");
+            list.replaceChildren();
+
+            if (!relatedEntities.length) {
+                empty.classList.remove("hidden");
+                return;
+            }
+
+            empty.classList.add("hidden");
+            for (const related of relatedEntities) {
+                const item = document.createElement("li");
+                item.className = "related-item";
+
+                const button = document.createElement("button");
+                button.type = "button";
+                button.className = "link-button";
+                button.textContent = related.label;
+                button.addEventListener("click", () => {
+                    vscode.postMessage({
+                        type: "openRelatedEntity",
+                        entityId: related.entityId,
+                    });
+                });
+
+                const meta = document.createElement("p");
+                meta.className = "muted";
+                meta.textContent = related.relationLabel || related.qualifiedName;
+
+                item.appendChild(button);
+                item.appendChild(meta);
+                list.appendChild(item);
+            }
+        }
+
+        function toggleText(element, value) {
+            if (value && value.trim().length > 0) {
+                element.textContent = value;
+                element.classList.remove("hidden");
+                return;
+            }
+            element.textContent = "";
+            element.classList.add("hidden");
+        }
+
+        function formatLocation(filePath, lineStart, lineEnd) {
+            if (lineStart === null || lineEnd === null) {
+                return filePath;
+            }
+            if (lineStart === lineEnd) {
+                return `${filePath}:${lineStart}`;
+            }
+            return `${filePath}:${lineStart}-${lineEnd}`;
+        }
+
+        function formatTimestamp(value) {
+            const parsed = new Date(value);
+            return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
+        }
+
+        function formatError(error, baseUrl) {
+            switch (error) {
+                case "backend_unavailable":
+                    return `Cannot connect to TailEvents backend. Make sure the server is running at ${baseUrl}.`;
+                case "entity_not_found":
+                    return "No indexed entity found at this location.";
+                case "timeout":
+                    return "Request timed out. The backend may be busy generating an explanation.";
+                default:
+                    return "Something went wrong.";
+            }
+        }
+    </script>
+</body>
+</html>

@@ -149,6 +149,30 @@ DB path: ./tailevents.db
 - Notes: Extended `scripts/loadtest.py` with a new `mixed-workload` scenario plus CLI options for `--mix`, `--seed-count`, and `--random-seed`. Added unique seed-code generation so mixed-workload can prebuild a stable pool of explain targets, warm their caches, execute a deterministic `70/20/10` explain/write/query mix, and report per-operation latency and cache-hit metrics. Validated the script with a small smoke run and with the planned baseline (`100/10`) and mid-size (`300/20`) mixed-workload runs using spawned local app instances.
 - Deviations from design: increased the script's default per-request timeout to 120 seconds and limited mixed-workload cache warmup to a small concurrency of 2 so the planned default commands can complete against the current real LLM backend.
 
+### Session 18
+- Date: 2026-04-15
+- Module: VSCode extension manual test setup
+- Notes: Added `vscode-extension` manual test scripts for starting the backend and seeding deterministic test data, created `vscode-extension/manual_test_target.py` as the stable hover/sidebar target, and rewrote `TEST_TUTORIAL.md` around the frontend manual validation flow on port `8766`.
+- Deviations from design: none; this session added manual-test tooling and tutorial updates only.
+
+### Session 19
+- Date: 2026-04-15
+- Module: VSCode extension debug config
+- Notes: Added workspace-level `.vscode/launch.json` and `.vscode/tasks.json` so `Run Extension` launches the extension host with the repository root opened as the workspace and compiles the extension before debugging. This avoids empty-workspace runs where `workspaceFolders` is undefined and the frontend cannot resolve `manual_test_target.py`.
+- Deviations from design: none; this session added debug tooling only.
+
+### Session 20
+- Date: 2026-04-15
+- Module: VSCode extension location lookup fallback
+- Notes: Hardened frontend entity lookup so hover and `Explain Current Symbol` now try multiple file-path candidates derived from the active file, including a `workspace-folder-name + relative path` fallback. This fixes the manual test flow when the extension host is opened on `vscode-extension/` instead of the repository root. Added unit coverage for the new fallback behavior.
+- Deviations from design: none; this session improved frontend lookup robustness only.
+
+### Session 21
+- Date: 2026-04-15
+- Module: VSCode extension no-workspace lookup fallback
+- Notes: Further hardened frontend lookup to work even when the extension host is launched without a proper workspace folder. The frontend now derives suffix-based file candidates from the absolute file path (for example `manual_test_target.py`, `vscode-extension/manual_test_target.py`, `demo/vscode-extension/manual_test_target.py`) and tries them in order. Added unit coverage for the no-workspace fallback path.
+- Deviations from design: none; this session improved manual-test resilience only.
+
 ---
 
 *Update this file at the end of every coding session.*

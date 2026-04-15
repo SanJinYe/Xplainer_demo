@@ -1,0 +1,98 @@
+{
+  "name": "tailevents",
+  "displayName": "TailEvents Code Explainer",
+  "publisher": "tailevents",
+  "version": "0.0.1",
+  "private": true,
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:python",
+    "onView:tailevents.sidebarView",
+    "onCommand:tailEvents.explainCurrentSymbol",
+    "onCommand:tailEvents.openPanel",
+    "onCommand:tailEvents.refreshPanel"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "tailEvents.explainCurrentSymbol",
+        "title": "TailEvents: Explain Current Symbol"
+      },
+      {
+        "command": "tailEvents.openPanel",
+        "title": "TailEvents: Open Panel"
+      },
+      {
+        "command": "tailEvents.refreshPanel",
+        "title": "TailEvents: Refresh Panel"
+      }
+    ],
+    "configuration": {
+      "title": "TailEvents",
+      "properties": {
+        "tailEvents.baseUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8766/api/v1",
+          "description": "Base URL of the TailEvents backend API."
+        },
+        "tailEvents.enableHoverPreview": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable TailEvents hover previews for indexed Python entities."
+        },
+        "tailEvents.hoverDebounceMs": {
+          "type": "number",
+          "default": 250,
+          "description": "Reserved for future hover debounce support. Not used in the current MVP."
+        },
+        "tailEvents.requestTimeoutMs": {
+          "type": "number",
+          "default": 5000,
+          "minimum": 100,
+          "description": "Timeout in milliseconds for TailEvents API requests."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "tailevents-sidebar",
+          "title": "TailEvents",
+          "icon": "media/icons/activity-bar.svg"
+        }
+      ]
+    },
+    "views": {
+      "tailevents-sidebar": [
+        {
+          "id": "tailevents.sidebarView",
+          "name": "Code Explainer",
+          "type": "webview"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test:unit": "npm run compile && npx mocha \"out/test/**/*.test.js\"",
+    "test:manual:compile": "npm run compile",
+    "test:manual:backend": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/start-backend.ps1",
+    "test:manual:seed": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/seed-manual-test.ps1",
+    "test:manual:prepare": "npm run test:manual:compile && npm run test:manual:seed",
+    "test": "npm run test:unit"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^24.0.0",
+    "@types/vscode": "^1.85.0",
+    "mocha": "^11.7.1",
+    "typescript": "^5.8.3"
+  }
+}
