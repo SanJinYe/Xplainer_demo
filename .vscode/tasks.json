@@ -12,45 +12,6 @@
         "$tsc"
       ],
       "group": "build"
-    },
-    {
-      "label": "vscode-extension: manual backend",
-      "type": "shell",
-      "command": "npm run test:manual:backend",
-      "options": {
-        "cwd": "${workspaceFolder}/vscode-extension"
-      },
-      "presentation": {
-        "reveal": "always",
-        "panel": "dedicated"
-      },
-      "group": "test"
-    },
-    {
-      "label": "vscode-extension: manual reset",
-      "type": "shell",
-      "command": "npm run test:manual:reset",
-      "options": {
-        "cwd": "${workspaceFolder}/vscode-extension"
-      },
-      "presentation": {
-        "reveal": "always",
-        "panel": "shared"
-      },
-      "group": "test"
-    },
-    {
-      "label": "vscode-extension: manual prepare",
-      "type": "shell",
-      "command": "npm run test:manual:prepare",
-      "options": {
-        "cwd": "${workspaceFolder}/vscode-extension"
-      },
-      "presentation": {
-        "reveal": "always",
-        "panel": "shared"
-      },
-      "group": "test"
     }
   ]
 }

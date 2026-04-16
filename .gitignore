@@ -8,9 +8,14 @@ __pycache__/
 *.db-wal
 .tmp/
 pytest-cache-files-*/
+AGENTS.md
+.codex/
+docs/
+NEXT_PHASE_TASK.md
 TEST_TUTORIAL.md
 CONTEXT.md
 CURRENT_PROGRESS.md
+tests/
 regression_report.txt
 explanation_prompt_audit.md
 explanation_quality_check.md
@@ -18,5 +23,9 @@ loadtest-results/
 k6-summary-*.json
 pressure-report-*.json
 vscode-extension/*.vsix
+vscode-extension/test/
+vscode-extension/manual_test_target.py
+vscode-extension/manual_test_complex_target.py
+vscode-extension/scripts/
 .vscode-test/
 .vscode-test-web/

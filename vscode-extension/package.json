@@ -87,11 +87,6 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "test:unit": "npm run compile && npx mocha \"out/test/**/*.test.js\"",
-    "test:manual:compile": "npm run compile",
-    "test:manual:backend": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/start-backend.ps1",
-    "test:manual:reset": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/reset-manual-test.ps1",
-    "test:manual:seed": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/seed-manual-test.ps1",
-    "test:manual:prepare": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/prepare-manual-test.ps1",
     "test": "npm run test:unit"
   },
   "devDependencies": {
