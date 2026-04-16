@@ -137,8 +137,20 @@ uvicorn tailevents.main:app --host 127.0.0.1 --port 8766
 
 基础流程：
 
-1. 启动后端
-2. `cd vscode-extension && npm run test:manual:prepare`
+1. 启动后端：
+
+   ```powershell
+   cd vscode-extension
+   npm run test:manual:backend
+   ```
+
+2. 编译 extension 并准备基础 explain 数据：
+
+   ```powershell
+   cd vscode-extension
+   npm run test:manual:prepare
+   ```
+
 3. 在仓库根目录按 `F5 -> Run Extension`
 
 当前 Extension Host 使用独立 workspace 文件：
@@ -149,6 +161,23 @@ uvicorn tailevents.main:app --host 127.0.0.1 --port 8766
 
 - [manual_test_target.py](vscode-extension/manual_test_target.py)
 - [manual_test_complex_target.py](vscode-extension/manual_test_complex_target.py)
+
+`Code` 模式当前固定包含三块输出：
+
+- `Step Transcript`
+  - 只显示 task / status / tool_call / view / edit / verify
+- `Model Output`
+  - 只显示模型原始 token 流
+- `Verified Draft`
+  - 只显示 verify 成功后的最终 draft
+
+手测时最关键的检查点是：
+
+- `Run` 后要同时看到 transcript 和 model token 流
+- 只有 verified draft 出来后 `Apply` 才可点击
+- no-op edit 必须显示在 `edit/failed`
+- 成功 `Apply` 后才会写最终 `RawEvent`
+- 对复杂样例，在首次成功 `Apply` 前如果 explain 返回 404，这属于预期
 
 ## 当前验证结果
 
@@ -163,6 +192,14 @@ uvicorn tailevents.main:app --host 127.0.0.1 --port 8766
 
 - 这两组是当前 `B-next` 的目标测试
 - 不代表根目录所有历史测试都在当前 shell 环境下全绿
+
+当前已经人工验证过的行为包括：
+
+- hover summary
+- `TailEvents: Explain Current Symbol`
+- explanation sidebar 的 history / related entities
+- `Code` 模式下的 `Run / Cancel / Apply`
+- `view -> edit -> verify -> final RawEvent` 闭环
 
 ## 当前边界
 
