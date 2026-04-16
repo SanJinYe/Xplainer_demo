@@ -1,6 +1,7 @@
 """LLM client implementations for explanation generation."""
 
-from typing import Any, Optional
+import json
+from typing import Any, AsyncIterator, Optional
 
 import httpx
 
@@ -12,6 +13,22 @@ from tailevents.explanation.exceptions import (
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
+
+
+async def _iter_sse_payloads(response: httpx.Response) -> AsyncIterator[dict[str, Any]]:
+    async for line in response.aiter_lines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(":") or not stripped.startswith("data:"):
+            continue
+
+        payload = stripped[5:].strip()
+        if not payload or payload == "[DONE]":
+            continue
+
+        try:
+            yield json.loads(payload)
+        except json.JSONDecodeError:
+            continue
 
 
 class OllamaLLMClient:
@@ -62,6 +79,57 @@ class OllamaLLMClient:
         if not content:
             raise LLMClientError("Ollama returned an empty response")
         return str(content).strip()
+
+    async def stream_generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 1000,
+        temperature: float = 0.3,
+    ) -> AsyncIterator[str]:
+        payload = {
+            "model": self._model,
+            "system": system_prompt,
+            "prompt": user_prompt,
+            "stream": True,
+            "options": {
+                "temperature": temperature,
+                "num_predict": max_tokens,
+            },
+        }
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=self._timeout,
+                trust_env=True,
+            ) as client:
+                async with client.stream(
+                    "POST",
+                    f"{self._base_url}/api/generate",
+                    json=payload,
+                ) as response:
+                    response.raise_for_status()
+                    async for line in response.aiter_lines():
+                        stripped = line.strip()
+                        if not stripped:
+                            continue
+                        try:
+                            data = json.loads(stripped)
+                        except json.JSONDecodeError:
+                            continue
+
+                        if data.get("error"):
+                            raise LLMClientError(f"Ollama request failed: {data['error']}")
+
+                        content = str(data.get("response", ""))
+                        if content:
+                            yield content
+        except httpx.HTTPStatusError as error:
+            raise LLMClientError(
+                f"Ollama request failed with status {error.response.status_code}"
+            ) from error
+        except httpx.HTTPError as error:
+            raise LLMClientError(f"Ollama request failed: {error}") from error
 
 
 class ClaudeLLMClient:
@@ -134,6 +202,61 @@ class ClaudeLLMClient:
         if not content:
             raise LLMClientError("Claude returned an empty response")
         return content
+
+    async def stream_generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 1000,
+        temperature: float = 0.3,
+    ) -> AsyncIterator[str]:
+        headers = {
+            "x-api-key": self._api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+        payload = {
+            "model": self._model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "system": system_prompt,
+            "stream": True,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": user_prompt,
+                }
+            ],
+        }
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=self._timeout,
+                proxy=self._proxy_url,
+                trust_env=True,
+            ) as client:
+                async with client.stream(
+                    "POST",
+                    ANTHROPIC_API_URL,
+                    headers=headers,
+                    json=payload,
+                ) as response:
+                    response.raise_for_status()
+                    async for data in _iter_sse_payloads(response):
+                        if data.get("type") == "error":
+                            message = data.get("error", {}).get("message", "Claude stream failed")
+                            raise LLMClientError(str(message))
+                        if data.get("type") != "content_block_delta":
+                            continue
+                        text = data.get("delta", {}).get("text")
+                        if text:
+                            yield str(text)
+        except httpx.HTTPStatusError as error:
+            raise LLMClientError(
+                f"Claude request failed with status {error.response.status_code}"
+            ) from error
+        except httpx.HTTPError as error:
+            raise LLMClientError(f"Claude request failed: {error}") from error
 
 
 class OpenRouterLLMClient:
@@ -212,6 +335,62 @@ class OpenRouterLLMClient:
         if not content:
             raise LLMClientError("OpenRouter returned an empty response")
         return content
+
+    async def stream_generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 1000,
+        temperature: float = 0.3,
+    ) -> AsyncIterator[str]:
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        if self._site_url:
+            headers["HTTP-Referer"] = self._site_url
+        if self._app_name:
+            headers["X-Title"] = self._app_name
+
+        payload = {
+            "model": self._model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": True,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        }
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=self._timeout,
+                proxy=self._proxy_url,
+                trust_env=True,
+            ) as client:
+                async with client.stream(
+                    "POST",
+                    f"{self._base_url}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                ) as response:
+                    response.raise_for_status()
+                    async for data in _iter_sse_payloads(response):
+                        choices = data.get("choices", [])
+                        if not choices:
+                            continue
+                        delta = choices[0].get("delta", {})
+                        content = delta.get("content")
+                        text = self._extract_message_content(content)
+                        if text:
+                            yield text
+        except httpx.HTTPStatusError as error:
+            raise LLMClientError(
+                f"OpenRouter request failed with status {error.response.status_code}"
+            ) from error
+        except httpx.HTTPError as error:
+            raise LLMClientError(f"OpenRouter request failed: {error}") from error
 
     def _extract_message_content(self, content: Any) -> str:
         if isinstance(content, str):

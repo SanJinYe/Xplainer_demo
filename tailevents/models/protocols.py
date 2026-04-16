@@ -1,6 +1,6 @@
 """Protocol interfaces shared across modules."""
 
-from typing import Optional, Protocol, TYPE_CHECKING, runtime_checkable
+from typing import AsyncIterator, Optional, Protocol, TYPE_CHECKING, runtime_checkable
 
 if TYPE_CHECKING:
     from tailevents.models.entity import CodeEntity
@@ -138,6 +138,14 @@ class LLMClientProtocol(Protocol):
         max_tokens: int = 1000,
         temperature: float = 0.3,
     ) -> str: ...
+
+    async def stream_generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 1000,
+        temperature: float = 0.3,
+    ) -> AsyncIterator[str]: ...
 
 
 @runtime_checkable

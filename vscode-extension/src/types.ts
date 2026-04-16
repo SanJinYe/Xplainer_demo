@@ -6,6 +6,15 @@ export type ApiErrorCategory =
     | "timeout"
     | "unknown";
 
+export type SidebarMode = "explain" | "code";
+export type CodeTaskStatus =
+    | "idle"
+    | "running"
+    | "ready_to_apply"
+    | "applying"
+    | "applied"
+    | "error";
+
 export interface BackendParamInfo {
     name: string;
     type_hint?: string | null;
@@ -82,6 +91,31 @@ export interface BackendTailEvent {
     decision_alternatives?: string[] | null;
     entity_refs: BackendEntityRef[];
     external_refs: BackendExternalRef[];
+}
+
+export interface CreateRawEventPayload {
+    action_type: "create" | "modify";
+    file_path: string;
+    code_snapshot: string;
+    intent: string;
+    reasoning?: string | null;
+    decision_alternatives?: string[] | null;
+    session_id: string;
+    line_range?: LineRange | null;
+    external_refs: BackendExternalRef[];
+}
+
+export interface CodingTaskRequestPayload {
+    file_path: string;
+    file_content: string;
+    user_prompt: string;
+}
+
+export interface CodingTaskResult {
+    updated_file_content: string;
+    intent: string;
+    reasoning?: string | null;
+    action_type: "create" | "modify";
 }
 
 export interface BackendRelatedEntity {
@@ -168,6 +202,17 @@ export interface SidebarViewModel {
     relatedEntities: RelatedEntityViewModel[];
 }
 
+export interface CodeViewModel {
+    filePath: string | null;
+    status: CodeTaskStatus;
+    streamedText: string;
+    message: string | null;
+    canRun: boolean;
+    canCancel: boolean;
+    canApply: boolean;
+    canRetryEventWrite: boolean;
+}
+
 export interface SidebarEmptyMessage {
     type: "state:empty";
     message: string;
@@ -189,7 +234,19 @@ export interface SidebarErrorMessage {
     baseUrl: string;
 }
 
+export interface SidebarModeMessage {
+    type: "mode:update";
+    mode: SidebarMode;
+}
+
+export interface SidebarCodeMessage {
+    type: "code:update";
+    data: CodeViewModel;
+}
+
 export type SidebarMessageToWebview =
+    | SidebarModeMessage
+    | SidebarCodeMessage
     | SidebarEmptyMessage
     | SidebarLoadingMessage
     | SidebarUpdateMessage
@@ -203,12 +260,39 @@ export interface SidebarRefreshMessage {
     type: "refresh";
 }
 
+export interface SidebarSetModeMessage {
+    type: "setMode";
+    mode: SidebarMode;
+}
+
 export interface SidebarOpenRelatedEntityMessage {
     type: "openRelatedEntity";
     entityId: string;
 }
 
+export interface SidebarRunTaskMessage {
+    type: "runTask";
+    prompt: string;
+}
+
+export interface SidebarCancelTaskMessage {
+    type: "cancelTask";
+}
+
+export interface SidebarApplyTaskMessage {
+    type: "applyTask";
+}
+
+export interface SidebarRetryEventWriteMessage {
+    type: "retryEventWrite";
+}
+
 export type SidebarMessageFromWebview =
     | SidebarReadyMessage
     | SidebarRefreshMessage
-    | SidebarOpenRelatedEntityMessage;
+    | SidebarSetModeMessage
+    | SidebarOpenRelatedEntityMessage
+    | SidebarRunTaskMessage
+    | SidebarCancelTaskMessage
+    | SidebarApplyTaskMessage
+    | SidebarRetryEventWriteMessage;

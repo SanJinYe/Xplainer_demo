@@ -3,6 +3,9 @@ __pycache__/
 .pytest_cache/
 .venv/
 .env
+.codex/
+.vscode/
+AGENTS.md
 *.db
 *.db-shm
 *.db-wal

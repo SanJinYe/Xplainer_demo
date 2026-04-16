@@ -8,25 +8,30 @@ import type {
     BackendCodeEntity,
     BackendEntityExplanation,
     BackendTailEvent,
+    CodingTaskResult,
+    CreateRawEventPayload,
     SidebarMessageToWebview,
 } from "../src/types";
 
 describe("TailEventsSidebarProvider", () => {
     const templatePath = path.join(__dirname, "..", "..", "media", "sidebar.html");
 
-    it("replays the empty state when the webview becomes ready", async () => {
+    it("replays mode, code state, and empty explain state when the webview becomes ready", async () => {
+        const runtime = createRuntime();
         const provider = new TailEventsSidebarProvider({
             apiClient: createApiClient(),
             templatePath,
             getBaseUrl: () => "http://127.0.0.1:8766/api/v1",
+            runtime,
         });
         const view = new FakeWebviewView();
 
         provider.resolveWebviewView(view.asView() as never);
         await view.simulateMessage({ type: "ready" });
 
-        assert.equal(view.messages.length, 1);
-        assert.equal(view.messages[0].type, "state:empty");
+        assert.equal(view.messages[0].type, "mode:update");
+        assert.equal(view.messages[1].type, "code:update");
+        assert.equal(view.messages[2].type, "state:empty");
     });
 
     it("posts loading then update when entity and explanation succeed", async () => {
@@ -34,6 +39,7 @@ describe("TailEventsSidebarProvider", () => {
             apiClient: createApiClient(),
             templatePath,
             getBaseUrl: () => "http://127.0.0.1:8766/api/v1",
+            runtime: createRuntime(),
         });
         const view = new FakeWebviewView();
 
@@ -57,6 +63,7 @@ describe("TailEventsSidebarProvider", () => {
             }),
             templatePath,
             getBaseUrl: () => "http://127.0.0.1:8766/api/v1",
+            runtime: createRuntime(),
         });
         const view = new FakeWebviewView();
 
@@ -76,6 +83,7 @@ describe("TailEventsSidebarProvider", () => {
             }),
             templatePath,
             getBaseUrl: () => "http://127.0.0.1:8766/api/v1",
+            runtime: createRuntime(),
         });
         const view = new FakeWebviewView();
 
@@ -93,14 +101,13 @@ describe("TailEventsSidebarProvider", () => {
         const eventsDeferred = createAbortableDeferred<BackendTailEvent[]>();
         const provider = new TailEventsSidebarProvider({
             apiClient: {
-                getEntityByLocation: async () => success(sampleEntity()),
+                ...createApiClient(),
                 getEntity: async (entityId, signal) => {
                     if (entityId === "ent_slow") {
                         return entityDeferred.promise(signal);
                     }
                     return success(sampleEntity("ent_fast"));
                 },
-                getExplanationSummary: async () => success(sampleExplanation()),
                 getExplanationFull: async (entityId, signal) => {
                     if (entityId === "ent_slow") {
                         return explanationDeferred.promise(signal);
@@ -116,6 +123,7 @@ describe("TailEventsSidebarProvider", () => {
             },
             templatePath,
             getBaseUrl: () => "http://127.0.0.1:8766/api/v1",
+            runtime: createRuntime(),
         });
         const view = new FakeWebviewView();
 
@@ -130,34 +138,185 @@ describe("TailEventsSidebarProvider", () => {
         assert.equal(updateMessages[0].data.entityId, "ent_fast");
     });
 
-    it("handles ready, refresh, and openRelatedEntity messages", async () => {
-        const api = createApiClient();
-        let entityLoads = 0;
+    it("runs a coding task and exposes apply when a valid result arrives", async () => {
+        const runtime = createRuntime();
         const provider = new TailEventsSidebarProvider({
-            apiClient: {
-                ...api,
-                getEntity: async (entityId, signal) => {
-                    entityLoads += 1;
-                    return api.getEntity(entityId, signal);
+            apiClient: createApiClient({
+                onRunTask: async (_payload, handlers) => {
+                    handlers.onDelta?.('{"updated');
+                    handlers.onDelta?.('_file_content":"print(1)\\n"}');
+                    return success({
+                        updated_file_content: "print(1)\n",
+                        intent: "change output to 1",
+                        reasoning: "minimal edit",
+                        action_type: "modify",
+                    });
                 },
-            },
+            }),
             templatePath,
             getBaseUrl: () => "http://127.0.0.1:8766/api/v1",
+            runtime,
+            generateSessionId: () => "b0_fixed123456",
         });
         const view = new FakeWebviewView();
 
         provider.resolveWebviewView(view.asView() as never);
-        await provider.loadEntity("ent_1");
-        view.messages.length = 0;
+        await view.simulateMessage({ type: "runTask", prompt: "change output to 1" });
 
-        await view.simulateMessage({ type: "ready" });
-        assert.equal(view.messages[0].type, "state:update");
+        const lastCodeUpdate = findLastMessage(view.messages, "code:update");
+        assert.equal(lastCodeUpdate.data.status, "ready_to_apply");
+        assert.equal(lastCodeUpdate.data.canApply, true);
+        assert.ok(lastCodeUpdate.data.streamedText.includes('{"updated'));
+    });
 
-        await view.simulateMessage({ type: "refresh" });
-        await view.simulateMessage({ type: "openRelatedEntity", entityId: "ent_2" });
+    it("cancels an in-flight coding task", async () => {
+        let aborted = false;
+        const runtime = createRuntime();
+        const provider = new TailEventsSidebarProvider({
+            apiClient: createApiClient({
+                onRunTask: async (_payload, _handlers, signal) => {
+                    return new Promise((resolve) => {
+                        signal?.addEventListener(
+                            "abort",
+                            () => {
+                                aborted = true;
+                                resolve(failure("unknown"));
+                            },
+                            { once: true },
+                        );
+                    });
+                },
+            }),
+            templatePath,
+            getBaseUrl: () => "http://127.0.0.1:8766/api/v1",
+            runtime,
+        });
+        const view = new FakeWebviewView();
 
-        assert.ok(entityLoads >= 3);
-        assert.equal(provider.getCurrentEntityId(), "ent_2");
+        provider.resolveWebviewView(view.asView() as never);
+        const running = view.simulateMessage(
+            { type: "runTask", prompt: "change output to 1" },
+            false,
+        );
+        await flushAsyncWork();
+        await view.simulateMessage({ type: "cancelTask" });
+        await running;
+
+        const lastCodeUpdate = findLastMessage(view.messages, "code:update");
+        assert.equal(aborted, true);
+        assert.equal(lastCodeUpdate.data.status, "idle");
+        assert.equal(lastCodeUpdate.data.message, "Task cancelled.");
+    });
+
+    it("applies generated content, writes a RawEvent, and refreshes explain", async () => {
+        const runtime = createRuntime();
+        const createdEvents: CreateRawEventPayload[] = [];
+        const provider = new TailEventsSidebarProvider({
+            apiClient: createApiClient({
+                onRunTask: async () => {
+                    return success({
+                        updated_file_content: "print(1)\n",
+                        intent: "change output to 1",
+                        reasoning: "minimal edit",
+                        action_type: "modify",
+                    });
+                },
+                onCreateEvent: async (payload) => {
+                    createdEvents.push(payload);
+                    return success(sampleEvents()[0]);
+                },
+            }),
+            templatePath,
+            getBaseUrl: () => "http://127.0.0.1:8766/api/v1",
+            runtime,
+            generateSessionId: () => "b0_fixed123456",
+        });
+        const view = new FakeWebviewView();
+
+        provider.resolveWebviewView(view.asView() as never);
+        await view.simulateMessage({ type: "runTask", prompt: "change output to 1" });
+        await view.simulateMessage({ type: "applyTask" });
+
+        const lastCodeUpdate = findLastMessage(view.messages, "code:update");
+        const explainUpdate = findLastMessage(view.messages, "state:update");
+        assert.equal(runtime.editor.document.text, "print(1)\n");
+        assert.equal(createdEvents.length, 1);
+        assert.equal(createdEvents[0].file_path, "pkg/demo.py");
+        assert.equal(createdEvents[0].session_id, "b0_fixed123456");
+        assert.equal(lastCodeUpdate.data.status, "applied");
+        assert.equal(explainUpdate.data.entityId, "ent_1");
+    });
+
+    it("rejects apply when the file changed after generation", async () => {
+        const runtime = createRuntime();
+        const provider = new TailEventsSidebarProvider({
+            apiClient: createApiClient({
+                onRunTask: async () => {
+                    return success({
+                        updated_file_content: "print(1)\n",
+                        intent: "change output to 1",
+                        reasoning: null,
+                        action_type: "modify",
+                    });
+                },
+            }),
+            templatePath,
+            getBaseUrl: () => "http://127.0.0.1:8766/api/v1",
+            runtime,
+        });
+        const view = new FakeWebviewView();
+
+        provider.resolveWebviewView(view.asView() as never);
+        await view.simulateMessage({ type: "runTask", prompt: "change output to 1" });
+        runtime.editor.document.version += 1;
+        await view.simulateMessage({ type: "applyTask" });
+
+        const lastCodeUpdate = findLastMessage(view.messages, "code:update");
+        assert.equal(lastCodeUpdate.data.status, "error");
+        assert.equal(lastCodeUpdate.data.message, "The file changed after generation. Please run again.");
+    });
+
+    it("keeps retry event write available when event creation fails", async () => {
+        const runtime = createRuntime();
+        let createEventCalls = 0;
+        const provider = new TailEventsSidebarProvider({
+            apiClient: createApiClient({
+                onRunTask: async () => {
+                    return success({
+                        updated_file_content: "print(1)\n",
+                        intent: "change output to 1",
+                        reasoning: null,
+                        action_type: "modify",
+                    });
+                },
+                onCreateEvent: async () => {
+                    createEventCalls += 1;
+                    if (createEventCalls === 1) {
+                        return failure("unknown");
+                    }
+                    return success(sampleEvents()[0]);
+                },
+            }),
+            templatePath,
+            getBaseUrl: () => "http://127.0.0.1:8766/api/v1",
+            runtime,
+        });
+        const view = new FakeWebviewView();
+
+        provider.resolveWebviewView(view.asView() as never);
+        await view.simulateMessage({ type: "runTask", prompt: "change output to 1" });
+        await view.simulateMessage({ type: "applyTask" });
+
+        let lastCodeUpdate = findLastMessage(view.messages, "code:update");
+        assert.equal(lastCodeUpdate.data.status, "error");
+        assert.equal(lastCodeUpdate.data.canRetryEventWrite, true);
+        assert.equal(runtime.editor.document.text, "print(1)\n");
+
+        await view.simulateMessage({ type: "retryEventWrite" });
+
+        lastCodeUpdate = findLastMessage(view.messages, "code:update");
+        assert.equal(createEventCalls, 2);
+        assert.equal(lastCodeUpdate.data.status, "applied");
     });
 });
 
@@ -165,6 +324,8 @@ function createApiClient(options: {
     entityResult?: ApiResult<BackendCodeEntity>;
     explanationResult?: ApiResult<BackendEntityExplanation>;
     eventsResult?: ApiResult<BackendTailEvent[]>;
+    onRunTask?: TailEventsApi["runCodingTaskStream"];
+    onCreateEvent?: TailEventsApi["createEvent"];
 } = {}): TailEventsApi {
     return {
         getEntityByLocation: async () => success(sampleEntity()),
@@ -172,7 +333,74 @@ function createApiClient(options: {
         getExplanationSummary: async () => success(sampleExplanation()),
         getExplanationFull: async () => options.explanationResult ?? success(sampleExplanation()),
         getEntityEvents: async () => options.eventsResult ?? success(sampleEvents()),
+        createEvent: async (payload, signal) => {
+            if (options.onCreateEvent) {
+                return options.onCreateEvent(payload, signal);
+            }
+            return success(sampleEvents()[0]);
+        },
+        runCodingTaskStream: async (payload, handlers, signal) => {
+            if (options.onRunTask) {
+                return options.onRunTask(payload, handlers, signal);
+            }
+            handlers.onDelta?.('{"updated_file_content":"print(1)\\n"}');
+            return success({
+                updated_file_content: "print(1)\n",
+                intent: "change output to 1",
+                reasoning: null,
+                action_type: "modify",
+            });
+        },
     };
+}
+
+function createRuntime() {
+    const document = new FakeDocument("C:\\repo\\demo\\pkg\\demo.py", "python", "print(0)\n");
+    const editor = new FakeEditor(document);
+    return {
+        editor,
+        getActiveEditor: () => editor as unknown as any,
+        getWorkspaceFolders: () => [{ uri: { fsPath: "C:\\repo\\demo" } } as any],
+        replaceDocumentContent: async (_editor: unknown, content: string) => {
+            document.text = content;
+            document.version += 1;
+            return true;
+        },
+        saveDocument: async () => true,
+    };
+}
+
+class FakeDocument {
+    public version = 1;
+
+    public readonly isUntitled = false;
+
+    public readonly uri: { fsPath: string; scheme: string };
+
+    public constructor(
+        fsPath: string,
+        public readonly languageId: string,
+        public text: string,
+    ) {
+        this.uri = {
+            fsPath,
+            scheme: "file",
+        };
+    }
+
+    public getText(): string {
+        return this.text;
+    }
+}
+
+class FakeEditor {
+    public readonly selection = {
+        active: {
+            line: 0,
+        },
+    };
+
+    public constructor(public readonly document: FakeDocument) {}
 }
 
 class FakeWebviewView {
@@ -215,8 +443,11 @@ class FakeWebviewView {
         };
     }
 
-    public async simulateMessage(message: unknown): Promise<void> {
-        await this.messageListener?.(message);
+    public async simulateMessage(message: unknown, waitForIdle = true): Promise<void> {
+        this.messageListener?.(message);
+        if (waitForIdle) {
+            await flushAsyncWork();
+        }
     }
 }
 
@@ -359,6 +590,20 @@ function sampleEvents(): BackendTailEvent[] {
             external_refs: [],
         },
     ];
+}
+
+function findLastMessage<T extends SidebarMessageToWebview["type"]>(
+    messages: SidebarMessageToWebview[],
+    type: T,
+): Extract<SidebarMessageToWebview, { type: T }> {
+    const message = [...messages].reverse().find((item) => item.type === type);
+    assert.ok(message);
+    return message as Extract<SidebarMessageToWebview, { type: T }>;
+}
+
+async function flushAsyncWork(): Promise<void> {
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 function success<T>(data: T): ApiResult<T> {

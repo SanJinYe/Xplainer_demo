@@ -27,6 +27,7 @@ from tailevents.storage import (
     SQLiteRelationStore,
     initialize_db,
 )
+from tailevents.tasks import CodingTaskService
 
 
 @dataclass
@@ -46,6 +47,7 @@ class AppContainer:
     query_router: QueryRouter
     graph_service: GraphServiceStub
     ingestion_pipeline: IngestionPipeline
+    coding_task_service: CodingTaskService
 
     async def ingest_raw_event(self, raw_event: RawEvent) -> TailEvent:
         """Compatibility wrapper around the formal ingestion pipeline."""
@@ -192,6 +194,7 @@ def build_lifespan(
             indexer=indexer,
             hooks=[GraphUpdateHook(graph_service)],
         )
+        coding_task_service = CodingTaskService(active_llm_client)
 
         container = AppContainer(
             settings=app_settings,
@@ -207,6 +210,7 @@ def build_lifespan(
             query_router=query_router,
             graph_service=graph_service,
             ingestion_pipeline=ingestion_pipeline,
+            coding_task_service=coding_task_service,
         )
         app.state.db_manager = db_manager
         app.state.container = container
@@ -285,6 +289,12 @@ def get_ingestion_pipeline(
     return container.ingestion_pipeline
 
 
+def get_task_service(
+    container: AppContainer = Depends(get_container),
+) -> CodingTaskService:
+    return container.coding_task_service
+
+
 __all__ = [
     "AppContainer",
     "build_lifespan",
@@ -299,4 +309,5 @@ __all__ = [
     "get_query_router",
     "get_relation_store",
     "get_settings_dependency",
+    "get_task_service",
 ]

@@ -35,6 +35,51 @@
             display: none !important;
         }
 
+        .row {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .mode-switch {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-bottom: 16px;
+        }
+
+        .mode-button,
+        .action-button,
+        .retry-button {
+            border: 1px solid var(--vscode-list-hoverBackground);
+            background: transparent;
+            color: inherit;
+            border-radius: 6px;
+            padding: 8px 12px;
+            cursor: pointer;
+            font: inherit;
+        }
+
+        .mode-button.active {
+            background: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            border-color: var(--vscode-button-background);
+        }
+
+        .action-button.primary {
+            background: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            border-color: var(--vscode-button-background);
+        }
+
+        .mode-button:disabled,
+        .action-button:disabled,
+        .retry-button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
         .title-bar {
             display: flex;
             flex-direction: column;
@@ -47,7 +92,9 @@
         h2,
         h3,
         p,
-        ul {
+        ul,
+        pre,
+        textarea {
             margin: 0;
         }
 
@@ -93,21 +140,16 @@
         }
 
         .timeline-item,
-        .related-item {
+        .related-item,
+        .output-panel,
+        .input-panel {
             display: flex;
             flex-direction: column;
-            gap: 4px;
+            gap: 8px;
             padding: 10px 12px;
             border: 1px solid var(--vscode-list-hoverBackground);
             border-radius: 8px;
             background: transparent;
-        }
-
-        .row {
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-            align-items: center;
         }
 
         .link-button {
@@ -133,60 +175,109 @@
             gap: 12px;
         }
 
-        .retry-button {
-            align-self: flex-start;
-            border: 1px solid var(--vscode-list-hoverBackground);
-            background: transparent;
-            color: var(--vscode-textLink-foreground);
+        .panel {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        textarea,
+        pre {
+            width: 100%;
+            border: 1px solid var(--vscode-input-border, var(--vscode-list-hoverBackground));
             border-radius: 6px;
-            padding: 6px 10px;
-            cursor: pointer;
+            padding: 10px;
+            background: var(--vscode-input-background, transparent);
+            color: var(--vscode-input-foreground, inherit);
             font: inherit;
+        }
+
+        textarea {
+            min-height: 110px;
+            resize: vertical;
+        }
+
+        pre {
+            min-height: 180px;
+            white-space: pre-wrap;
+            word-break: break-word;
+            overflow-x: auto;
         }
     </style>
 </head>
 <body>
     <div id="app">
-        <section id="empty-state" class="state hidden">
-            <p id="empty-text" class="muted"></p>
+        <div class="mode-switch">
+            <button id="mode-explain" class="mode-button active" type="button">Explain</button>
+            <button id="mode-code" class="mode-button" type="button">Code</button>
+        </div>
+
+        <section id="explain-panel" class="panel">
+            <section id="empty-state" class="state hidden">
+                <p id="empty-text" class="muted"></p>
+            </section>
+
+            <section id="loading-state" class="state hidden">
+                <p id="loading-text"></p>
+            </section>
+
+            <section id="error-state" class="state hidden">
+                <p id="error-text"></p>
+                <button id="retry-button" class="retry-button" type="button">Retry</button>
+            </section>
+
+            <section id="content" class="hidden">
+                <header class="title-bar">
+                    <div class="row">
+                        <h2 id="entity-name"></h2>
+                        <span id="entity-type" class="badge"></span>
+                    </div>
+                    <p id="entity-location" class="muted"></p>
+                    <p id="entity-signature" class="text-block hidden"></p>
+                    <p id="event-count" class="muted"></p>
+                </header>
+
+                <section class="section">
+                    <h3>Explanation</h3>
+                    <p id="summary-text" class="lead hidden"></p>
+                    <p id="detail-text" class="text-block hidden"></p>
+                </section>
+
+                <section class="section">
+                    <h3>History</h3>
+                    <p id="history-fallback" class="muted hidden">History unavailable.</p>
+                    <ul id="timeline-list" class="timeline"></ul>
+                </section>
+
+                <section class="section">
+                    <h3>Related Entities</h3>
+                    <p id="related-empty" class="muted hidden">No related entities.</p>
+                    <ul id="related-list" class="related-list"></ul>
+                </section>
+            </section>
         </section>
 
-        <section id="loading-state" class="state hidden">
-            <p id="loading-text"></p>
-        </section>
+        <section id="code-panel" class="panel hidden">
+            <section class="input-panel">
+                <h3>Current File</h3>
+                <p id="code-file-path" class="muted">No file selected.</p>
+            </section>
 
-        <section id="error-state" class="state hidden">
-            <p id="error-text"></p>
-            <button id="retry-button" class="retry-button" type="button">Retry</button>
-        </section>
-
-        <section id="content" class="hidden">
-            <header class="title-bar">
+            <section class="input-panel">
+                <h3>Prompt</h3>
+                <textarea id="code-prompt" placeholder="Describe the change you want."></textarea>
                 <div class="row">
-                    <h2 id="entity-name"></h2>
-                    <span id="entity-type" class="badge"></span>
+                    <button id="run-button" class="action-button primary" type="button">Run</button>
+                    <button id="cancel-button" class="action-button" type="button">Cancel</button>
+                    <button id="apply-button" class="action-button" type="button">Apply</button>
+                    <button id="retry-event-button" class="action-button" type="button">Retry Event Write</button>
                 </div>
-                <p id="entity-location" class="muted"></p>
-                <p id="entity-signature" class="text-block hidden"></p>
-                <p id="event-count" class="muted"></p>
-            </header>
-
-            <section class="section">
-                <h3>Explanation</h3>
-                <p id="summary-text" class="lead hidden"></p>
-                <p id="detail-text" class="text-block hidden"></p>
+                <p id="code-status" class="muted"></p>
             </section>
 
-            <section class="section">
-                <h3>History</h3>
-                <p id="history-fallback" class="muted hidden">History unavailable.</p>
-                <ul id="timeline-list" class="timeline"></ul>
-            </section>
-
-            <section class="section">
-                <h3>Related Entities</h3>
-                <p id="related-empty" class="muted hidden">No related entities.</p>
-                <ul id="related-list" class="related-list"></ul>
+            <section class="output-panel">
+                <h3>Stream Output</h3>
+                <pre id="code-output"></pre>
             </section>
         </section>
     </div>
@@ -194,19 +285,75 @@
     <script nonce="__NONCE__">
         const vscode = acquireVsCodeApi();
 
+        const explainPanel = document.getElementById("explain-panel");
+        const codePanel = document.getElementById("code-panel");
+        const modeExplainButton = document.getElementById("mode-explain");
+        const modeCodeButton = document.getElementById("mode-code");
+
         const content = document.getElementById("content");
         const emptyState = document.getElementById("empty-state");
         const loadingState = document.getElementById("loading-state");
         const errorState = document.getElementById("error-state");
         const retryButton = document.getElementById("retry-button");
 
+        const promptInput = document.getElementById("code-prompt");
+        const runButton = document.getElementById("run-button");
+        const cancelButton = document.getElementById("cancel-button");
+        const applyButton = document.getElementById("apply-button");
+        const retryEventButton = document.getElementById("retry-event-button");
+
+        let currentMode = "explain";
+        let latestCodeState = {
+            canRun: false,
+            canCancel: false,
+            canApply: false,
+            canRetryEventWrite: false,
+        };
+
         retryButton.addEventListener("click", () => {
             vscode.postMessage({ type: "refresh" });
+        });
+
+        modeExplainButton.addEventListener("click", () => {
+            vscode.postMessage({ type: "setMode", mode: "explain" });
+        });
+
+        modeCodeButton.addEventListener("click", () => {
+            vscode.postMessage({ type: "setMode", mode: "code" });
+        });
+
+        promptInput.addEventListener("input", () => {
+            syncCodeButtons();
+        });
+
+        runButton.addEventListener("click", () => {
+            vscode.postMessage({
+                type: "runTask",
+                prompt: promptInput.value,
+            });
+        });
+
+        cancelButton.addEventListener("click", () => {
+            vscode.postMessage({ type: "cancelTask" });
+        });
+
+        applyButton.addEventListener("click", () => {
+            vscode.postMessage({ type: "applyTask" });
+        });
+
+        retryEventButton.addEventListener("click", () => {
+            vscode.postMessage({ type: "retryEventWrite" });
         });
 
         window.addEventListener("message", (event) => {
             const message = event.data;
             switch (message.type) {
+                case "mode:update":
+                    renderMode(message.mode);
+                    break;
+                case "code:update":
+                    renderCode(message.data);
+                    break;
                 case "state:empty":
                     showEmpty(message.message);
                     break;
@@ -227,6 +374,30 @@
         document.addEventListener("DOMContentLoaded", () => {
             vscode.postMessage({ type: "ready" });
         });
+
+        function renderMode(mode) {
+            currentMode = mode;
+            modeExplainButton.classList.toggle("active", mode === "explain");
+            modeCodeButton.classList.toggle("active", mode === "code");
+            explainPanel.classList.toggle("hidden", mode !== "explain");
+            codePanel.classList.toggle("hidden", mode !== "code");
+        }
+
+        function renderCode(data) {
+            latestCodeState = data;
+            document.getElementById("code-file-path").textContent = data.filePath || "No file selected.";
+            document.getElementById("code-status").textContent = data.message || "";
+            document.getElementById("code-output").textContent = data.streamedText || "";
+            syncCodeButtons();
+        }
+
+        function syncCodeButtons() {
+            const hasPrompt = promptInput.value.trim().length > 0;
+            runButton.disabled = !latestCodeState.canRun || !hasPrompt;
+            cancelButton.disabled = !latestCodeState.canCancel;
+            applyButton.disabled = !latestCodeState.canApply;
+            retryEventButton.disabled = !latestCodeState.canRetryEventWrite;
+        }
 
         function hideAllStates() {
             content.classList.add("hidden");

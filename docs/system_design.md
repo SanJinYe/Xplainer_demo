@@ -1305,3 +1305,360 @@ VSCode Extension 需要调用的 API 端点和预期行为：
 | 实时更新推送（需求 B） | `WS /ws/v1/updates` | 实时 |
 
 前端不需要知道后端的实现细节，只需要按 API 契约调用。API 返回的数据结构就是 `models/explanation.py` 中定义的 `ExplanationResponse`。
+
+---
+
+## 十八、下一阶段扩展设计（新增）
+
+本章描述在现有 Requirement A 后端与 VSCode Extension MVP 基础上，系统如何扩展为三条长期产品线。这里不是重写现有设计，而是在现有架构之上增加新的能力层。
+
+---
+
+## 18.1 扩展后的系统全景
+
+```text
+Coding Workbench / VSCode Extension
+    -> Explanation UI
+       -> Hover summary
+       -> Sidebar panel (streaming detailed explanation)
+    -> Coding UI
+       -> Prompt input
+       -> Task output stream
+       -> Task history
+    -> Onboarding UI
+       -> Repository baseline scan
+
+Backend
+    -> Existing Requirement A pipeline
+       -> Event Store
+       -> Indexer
+       -> Entity DB
+       -> Relation Store
+       -> Explanation Engine
+       -> Cache
+    -> Task execution pipeline (new)
+    -> Baseline onboarding pipeline (new)
+    -> External doc retrieval pipeline (later)
+```
+
+设计原则：
+
+1. 不推翻现有 Requirement A 实现；
+2. 先增加最小真实 coding 闭环，再优化 explanation；
+3. baseline onboarding 只生成 TailEvents，不预生成 explanation；
+4. GraphRAG 继续延后，但为其补齐局部范围与层级关系基础。
+
+---
+
+## 18.2 产品线 A：Explanation / RAG / 检索增强
+
+### 18.2.1 Explanation 分层
+
+Explanation 不再只有“summary / detailed / trace”这三个抽象 detail level，而是承担不同交互职责：
+
+- `summary`
+  - 用于 hover
+  - 输出极短文本
+  - 优先速度
+- `detailed`
+  - 用于 sidebar panel
+  - 支持流式展示
+  - 优先信息完整性，但仍受长度约束
+- `trace`
+  - 调试级解释
+  - 保留事件时间线感
+  - 不作为默认 UI 路径
+
+### 18.2.2 Context 裁剪策略
+
+`ContextAssembler` 扩展为带硬限制的上下文装配器：
+
+- `summary`
+  - target entity
+  - creation event
+  - latest modification event（最多 1 条）
+- `detailed`
+  - target entity
+  - creation event
+  - recent modifications（最多 3 条）
+  - direct callers（最多 2 个）
+  - direct callees（最多 2 个）
+- `trace`
+  - 在 `detailed` 基础上追加完整事件轨迹
+
+裁剪原则：
+
+- 优先保留高信号事件；
+- 优先保留高置信关系；
+- 不在 A3 之前引入“同文件近邻”这类低置信关系；
+- 外部 docs 在 A4 之前不进入默认 prompt。
+
+### 18.2.3 Explanation 输出约束
+
+`ExplanationFormatter` 增加最终输出约束：
+
+- summary 超长时强制截断；
+- detailed explanation 超长时清洗并截断；
+- 避免超长 explanation 进入 SQLite cache。
+
+### 18.2.4 Panel 流式 explanation
+
+新增 explanation streaming 接口：
+
+- `GET /api/v1/explain/{entity_id}/stream`
+
+协议：
+
+- 使用 `SSE`
+- 服务端按文本块发送
+- 客户端侧边栏先渲染 skeleton / summary，再流式拼接详细 explanation
+
+失败策略：
+
+- summary 成功、stream 失败：保留 summary，显示部分 explanation 和错误态
+- entity 失败：显示错误态
+- stream 中断：允许用户重试
+
+### 18.2.5 条件式双模型
+
+双模型不是固定架构，而是一个后续 checkpoint：
+
+- 先完成 explanation 收缩和 context 裁剪；
+- 用真实 coding 事件和 baseline 仓库事件做性能评测；
+- 若 hover summary 仍无法满足时延目标，再引入：
+  - `summary_backend / summary_model`
+  - `detailed_backend / detailed_model`
+
+在未达到触发条件前，系统仍允许 summary 和 detailed 共用同一 backend。
+
+### 18.2.6 范围 explanation v1
+
+A3 首版只支持高置信局部影响：
+
+- incoming `calls`
+- outgoing `calls`
+
+即：
+
+- 谁调用了它
+- 它调用了谁
+
+该能力将直接进入 explanation context 和 panel 展示，但不要求图可视化。
+
+A3 与 Requirement B 的边界：
+
+- A3：局部 caller / callee，快速、稳定、高置信
+- Requirement B：全局路径、子图、GraphRAG、entrypoint/output 影响链
+
+### 18.2.7 外部 docs Retriever v1（后续）
+
+A4 延后引入。第一版方案：
+
+- `pydoc/help`：符号直查
+- `README` / 用户授权 docs：分块后写入 SQLite FTS5
+- 每次 explanation 最多检索少量 chunk
+- 不引入向量数据库
+- 不允许整份 README 或整份 docs 直接进入 prompt
+
+---
+
+## 18.3 产品线 B：Coding 工作台
+
+### 18.3.1 B0 最小真实 coding 切片
+
+新增一个最小任务执行闭环，其目标不是完整产品，而是生成真实事件：
+
+1. 用户在前端输入 prompt
+2. 后端生成候选代码修改
+3. 前端展示流式输出
+4. 用户确认后写回当前文件
+5. 系统立即生成一条 `RawEvent`
+6. ingestion -> indexer -> explanation 全链路更新
+
+B0 的约束：
+
+- 单轮任务
+- 单文件
+- 不做任务历史
+- 不做 SecretStorage
+- 不做 MCP / skills UI
+- 不做多 provider profile
+
+### 18.3.2 完整 Coding 工作台（后续）
+
+完整工作台后续扩展为：
+
+- prompt 输入区
+- output stream 区
+- task history 区
+- provider / model 选择
+- MCP / skills 开关
+- API key 管理
+
+其中敏感信息策略为：
+
+- API key 最终由前端安全存储；
+- 非敏感默认配置仍由扩展 settings 管理；
+- 后端不要求用户长期通过 `.env` 手工切换。
+
+### 18.3.3 任务执行接口（预留）
+
+后续完整工作台的 API 预留为：
+
+- `POST /api/v1/tasks`
+- `GET /api/v1/tasks/{task_id}/stream`
+- `GET /api/v1/tasks/history`
+
+B0 阶段可以先用简化协议，不必一次实现全部接口。
+
+---
+
+## 18.4 产品线 C：仓库记忆 / 冷启动 Onboarding
+
+### 18.4.1 设计目标
+
+当 agent 接手的是一个已有仓库时，系统必须先建立“静态基线记忆”，让 explanation 和后续图分析有数据可用。
+
+### 18.4.2 C1 只生成 baseline TailEvents
+
+Baseline onboarding 的输出是 baseline TailEvents，而不是 explanation cache。
+
+工作流：
+
+1. 扫描仓库文件
+2. 对每个文件生成一条 baseline event
+3. 写入 Event Store
+4. 调用现有 ingestion/indexer
+5. 建立 entity / relation
+
+解释在用户 hover / 打开 panel 时按需生成，继续复用产品线 A 的 explanation pipeline。
+
+### 18.4.3 baseline event 语义
+
+建议新增事件语义：
+
+- `ActionType.BASELINE`
+
+baseline event 的特点：
+
+- `intent` 固定为基线扫描语义
+- `reasoning` 为空
+- 不代表 agent 的真实决策过程
+- 只代表“此文件在接手时的存在状态”
+
+### 18.4.4 执行策略
+
+C1 必须支持后台并行启动，但不阻塞 coding 任务：
+
+- onboarding 在后台按文件流式推进
+- coding task 可以先开始
+- 在 onboarding 完成前，全局图分析能力可能不完整，这是可接受的阶段性限制
+
+### 18.4.5 内存与落库策略
+
+C1 不允许“先扫完整仓库，再一次性落库”。必须：
+
+- 逐文件解析
+- 逐文件生成 baseline event
+- 逐文件写入
+- 释放中间状态
+
+这样可以避免大仓库扫描时的峰值内存问题。
+
+### 18.4.6 Baseline-aware explanation
+
+当 explanation 主要来自 baseline events 时，前端必须显式标注：
+
+- 这是“基于已有仓库基线”的解释
+- 不是“来自 agent 历史会话的解释”
+
+### 18.4.7 层级关系补齐
+
+为了支持后续 Requirement B，需要在 baseline 和后续 indexer 中补齐层级关系：
+
+- `module -> class/function`
+- `class -> method`
+
+关系类型使用：
+
+- `COMPOSED_OF`
+
+该能力不直接改变 A3 的局部范围 explanation，但为后续全局路径分析提供基础。
+
+---
+
+## 18.5 共享基础设施设计
+
+### 18.5.1 cache invalidation
+
+现有 explanation cache 需要继续扩展为：
+
+- 与 `entity_id` 关联；
+- 与 prompt version 关联；
+- 后续与 model profile 关联。
+
+失效触发条件：
+
+- entity 被修改
+- prompt version 变化
+- baseline onboarding 更新了相关实体
+- 后续模型配置切换
+
+### 18.5.2 并发控制
+
+前端已有 hover / sidebar 请求取消逻辑，后端新增两类控制：
+
+- 相同 explanation 请求的 in-flight 去重
+- explanation LLM 调用的全局并发限制
+
+### 18.5.3 explanation 质量闭环
+
+第一版不做用户在线反馈按钮，而是先做：
+
+- 人工评测集
+- explanation 长度 / 延迟 / cache hit telemetry
+- 本地 admin 统计或日志观测
+
+等 explanation 主链路稳定后，再考虑前端 thumbs up/down。
+
+### 18.5.4 长期存储压力
+
+仍保持单 SQLite，不引入第二套数据库。控制策略为：
+
+- explanation 变短
+- baseline event 去重
+- cache payload 受限
+- docs 检索采用 FTS5 而不是整文注入
+
+---
+
+## 18.6 新的阶段顺序
+
+### 阶段 1
+
+- B0 最小 coding -> event 闭环
+- A1 explanation 收缩
+- C1 baseline onboarding
+
+### 阶段 2
+
+- A2 panel 流式 explanation
+- explanation 质量评测与埋点
+- checkpoint：是否需要双模型
+
+### 阶段 3
+
+- C2 baseline-aware explanation
+- C3 `composed_of` 关系补齐
+- A3 局部范围 explanation
+
+### 阶段 4
+
+- B2 完整 Coding 工作台
+- 模型选择 / 历史任务 / MCP / skills
+- API key 前端管理
+
+### 阶段 5
+
+- A4 外部 docs Retriever
+- Requirement B 的全局路径与 GraphRAG

@@ -179,6 +179,29 @@ function createApiClient(options: {
         getExplanationSummary: async () => options.summaryResult,
         getExplanationFull: async () => success(sampleExplanation()),
         getEntityEvents: async () => success([]),
+        createEvent: async () => success({
+            event_id: "te_1",
+            timestamp: "2026-04-15T00:00:00Z",
+            agent_step_id: null,
+            session_id: "session_1",
+            action_type: "modify",
+            file_path: "pkg/demo.py",
+            line_range: null,
+            code_snapshot: "print(1)\n",
+            intent: "noop",
+            reasoning: null,
+            decision_alternatives: null,
+            entity_refs: [],
+            external_refs: [],
+        }),
+        runCodingTaskStream: async (_payload, _handlers) => {
+            return success({
+                updated_file_content: "print(1)\n",
+                intent: "noop",
+                reasoning: null,
+                action_type: "modify",
+            });
+        },
     };
 }
 

@@ -48,6 +48,24 @@ export function activate(context: vscode.ExtensionContext): void {
         apiClient,
         getBaseUrl,
         templatePath: path.join(context.extensionPath, "media", "sidebar.html"),
+        runtime: {
+            getActiveEditor: () => vscode.window.activeTextEditor ?? null,
+            getWorkspaceFolders: () => vscode.workspace.workspaceFolders,
+            replaceDocumentContent: async (editor, content) => {
+                const lastLineIndex = Math.max(editor.document.lineCount - 1, 0);
+                const lastLine = editor.document.lineAt(lastLineIndex);
+                const fullRange = new vscode.Range(
+                    0,
+                    0,
+                    lastLineIndex,
+                    lastLine.text.length,
+                );
+                return editor.edit((builder) => {
+                    builder.replace(fullRange, content);
+                });
+            },
+            saveDocument: async (document) => document.save(),
+        },
     });
 
     context.subscriptions.push(
@@ -62,6 +80,12 @@ export function activate(context: vscode.ExtensionContext): void {
 
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider(VIEW_ID, sidebarProvider),
+    );
+
+    context.subscriptions.push(
+        vscode.window.onDidChangeActiveTextEditor(() => {
+            void sidebarProvider.refreshCodeContext();
+        }),
     );
 
     context.subscriptions.push(

@@ -13,6 +13,7 @@ from tailevents.api.routes import (
     events_router,
     explanations_router,
     relations_router,
+    tasks_router,
 )
 from tailevents.config import Settings
 from tailevents.explanation import (
@@ -54,6 +55,7 @@ def create_app(
     app.include_router(entities_router, prefix="/api/v1")
     app.include_router(explanations_router, prefix="/api/v1")
     app.include_router(relations_router, prefix="/api/v1")
+    app.include_router(tasks_router, prefix="/api/v1")
     app.include_router(admin_router, prefix="/api/v1")
 
     @app.exception_handler(EntityExplanationNotFoundError)

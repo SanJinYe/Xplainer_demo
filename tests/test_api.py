@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -37,6 +38,39 @@ class FakeLLMClient:
         temperature: float = 0.3,
     ) -> str:
         return STRUCTURED_OUTPUT
+
+    async def stream_generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 1000,
+        temperature: float = 0.3,
+    ):
+        yield STRUCTURED_OUTPUT
+
+
+class FakeStreamingLLMClient:
+    def __init__(self, chunks: list[str]):
+        self._chunks = chunks
+
+    async def generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 1000,
+        temperature: float = 0.3,
+    ) -> str:
+        return "".join(self._chunks)
+
+    async def stream_generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 1000,
+        temperature: float = 0.3,
+    ):
+        for chunk in self._chunks:
+            yield chunk
 
 
 class FakeDocRetriever:
@@ -449,3 +483,76 @@ def test_api_error_responses(api_client):
         },
     )
     assert bad_event.status_code == 422
+
+
+def test_tasks_stream_endpoint_success_and_failure():
+    with TemporaryDirectory() as temp_dir:
+        db_path = Path(temp_dir) / "tailevents.db"
+        success_app = create_app(
+            settings=Settings(db_path=str(db_path)),
+            llm_client=FakeStreamingLLMClient(
+                [
+                    '{"updated_file_content":"print(1)\\n",',
+                    '"intent":"add print","reasoning":null,"action_type":"modify"}',
+                ]
+            ),
+            doc_retriever=FakeDocRetriever(),
+        )
+        with TestClient(success_app) as client:
+            with client.stream(
+                "POST",
+                "/api/v1/tasks/stream",
+                json={
+                    "file_path": "demo.py",
+                    "file_content": "print(0)\n",
+                    "user_prompt": "change the output to 1",
+                },
+            ) as response:
+                assert response.status_code == 200
+                events = parse_sse_events(response.iter_lines())
+
+        assert [event["event"] for event in events] == ["delta", "delta", "result", "done"]
+        assert events[2]["data"]["action_type"] == "modify"
+
+    with TemporaryDirectory() as temp_dir:
+        db_path = Path(temp_dir) / "tailevents.db"
+        failure_app = create_app(
+            settings=Settings(db_path=str(db_path)),
+            llm_client=FakeStreamingLLMClient(["not json"]),
+            doc_retriever=FakeDocRetriever(),
+        )
+        with TestClient(failure_app) as client:
+            with client.stream(
+                "POST",
+                "/api/v1/tasks/stream",
+                json={
+                    "file_path": "demo.py",
+                    "file_content": "print(0)\n",
+                    "user_prompt": "change the output to 1",
+                },
+            ) as response:
+                assert response.status_code == 200
+                events = parse_sse_events(response.iter_lines())
+
+        assert [event["event"] for event in events] == ["delta", "error", "done"]
+        assert "JSON" in events[1]["data"]["message"]
+
+
+def parse_sse_events(lines) -> list[dict]:
+    events = []
+    current_event = None
+    current_data = None
+    for raw_line in lines:
+        line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
+        if line == "":
+            if current_event is not None and current_data is not None:
+                events.append({"event": current_event, "data": json.loads(current_data)})
+            current_event = None
+            current_data = None
+            continue
+        if line.startswith("event: "):
+            current_event = line.removeprefix("event: ")
+            continue
+        if line.startswith("data: "):
+            current_data = line.removeprefix("data: ")
+    return events

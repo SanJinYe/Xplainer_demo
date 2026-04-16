@@ -4,6 +4,9 @@ import {
     type BackendCodeEntity,
     type BackendEntityExplanation,
     type BackendTailEvent,
+    type CodingTaskRequestPayload,
+    type CodingTaskResult,
+    type CreateRawEventPayload,
 } from "./types";
 
 type FetchLike = typeof fetch;
@@ -39,6 +42,19 @@ export interface TailEventsApi {
         entityId: string,
         signal?: AbortSignal,
     ): Promise<ApiResult<BackendTailEvent[]>>;
+    createEvent(
+        payload: CreateRawEventPayload,
+        signal?: AbortSignal,
+    ): Promise<ApiResult<BackendTailEvent>>;
+    runCodingTaskStream(
+        payload: CodingTaskRequestPayload,
+        handlers: CodingTaskStreamHandlers,
+        signal?: AbortSignal,
+    ): Promise<ApiResult<CodingTaskResult>>;
+}
+
+export interface CodingTaskStreamHandlers {
+    onDelta?: (text: string) => void;
 }
 
 export class TailEventsApiClient implements TailEventsApi {
@@ -132,20 +148,83 @@ export class TailEventsApiClient implements TailEventsApi {
         );
     }
 
+    public async createEvent(
+        payload: CreateRawEventPayload,
+        signal?: AbortSignal,
+    ): Promise<ApiResult<BackendTailEvent>> {
+        return this.requestJson<BackendTailEvent>(
+            "/events",
+            undefined,
+            signal,
+            {
+                method: "POST",
+                body: payload,
+            },
+        );
+    }
+
+    public async runCodingTaskStream(
+        payload: CodingTaskRequestPayload,
+        handlers: CodingTaskStreamHandlers,
+        signal?: AbortSignal,
+    ): Promise<ApiResult<CodingTaskResult>> {
+        const url = this.buildUrl("/tasks/stream", undefined);
+        const { signal: mergedSignal, cleanup } = this.buildMergedSignal(signal, false);
+        try {
+            const response = await this.fetchImpl(url, {
+                headers: {
+                    Accept: "text/event-stream",
+                    "Content-Type": "application/json",
+                },
+                method: "POST",
+                body: JSON.stringify(payload),
+                signal: mergedSignal,
+            });
+
+            if (!response.ok) {
+                return failure(classifyStatus(response.status), response.status);
+            }
+            if (!response.body) {
+                return failure("unknown", response.status);
+            }
+
+            const parsed = await consumeSseStream(response.body, handlers);
+            if (!parsed.ok) {
+                return failure(parsed.error, response.status);
+            }
+            return success(parsed.result, response.status);
+        } catch (error) {
+            const category = classifyFetchError(error, mergedSignal, signal);
+            if (!(signal?.aborted ?? false) && category !== "timeout") {
+                this.log(`[TailEvents] Task stream failed for ${url}: ${formatUnknownError(error)}`);
+            }
+            return failure(category, null);
+        } finally {
+            cleanup();
+        }
+    }
+
     private async requestJson<T>(
         route: string,
         query: Record<string, string> | undefined,
         signal?: AbortSignal,
+        init?: {
+            method?: "GET" | "POST";
+            body?: unknown;
+        },
     ): Promise<ApiResult<T>> {
         const url = this.buildUrl(route, query);
         const { signal: mergedSignal, cleanup } = this.buildMergedSignal(signal);
 
         try {
+            const body = init?.body === undefined ? undefined : JSON.stringify(init.body);
             const response = await this.fetchImpl(url, {
                 headers: {
                     Accept: "application/json",
+                    ...(body ? { "Content-Type": "application/json" } : {}),
                 },
-                method: "GET",
+                method: init?.method ?? "GET",
+                body,
                 signal: mergedSignal,
             });
 
@@ -180,11 +259,14 @@ export class TailEventsApiClient implements TailEventsApi {
 
     private buildMergedSignal(
         signal: AbortSignal | undefined,
+        useTimeout = true,
     ): { signal: AbortSignal; cleanup: () => void } {
-        const timeoutSignal = AbortSignal.timeout(Math.max(100, this.getTimeoutMs()));
+        const timeoutSignal = useTimeout
+            ? AbortSignal.timeout(Math.max(100, this.getTimeoutMs()))
+            : null;
         if (!signal) {
             return {
-                signal: timeoutSignal,
+                signal: timeoutSignal ?? new AbortController().signal,
                 cleanup: () => {
                     return;
                 },
@@ -207,15 +289,19 @@ export class TailEventsApiClient implements TailEventsApi {
             }
         };
 
-        const onTimeout = () => abortFrom(timeoutSignal);
+        const onTimeout = () => {
+            if (timeoutSignal) {
+                abortFrom(timeoutSignal);
+            }
+        };
         const onSignal = () => abortFrom(signal);
-        timeoutSignal.addEventListener("abort", onTimeout, { once: true });
+        timeoutSignal?.addEventListener("abort", onTimeout, { once: true });
         signal.addEventListener("abort", onSignal, { once: true });
 
         return {
             signal: controller.signal,
             cleanup: () => {
-                timeoutSignal.removeEventListener("abort", onTimeout);
+                timeoutSignal?.removeEventListener("abort", onTimeout);
                 signal.removeEventListener("abort", onSignal);
             },
         };
@@ -243,6 +329,91 @@ export class TailEventsApiClient implements TailEventsApi {
 
 function normalizeBaseUrl(baseUrl: string): string {
     return baseUrl.trim().replace(/\/+$/, "");
+}
+
+async function consumeSseStream(
+    stream: ReadableStream<Uint8Array>,
+    handlers: CodingTaskStreamHandlers,
+): Promise<
+    | { ok: true; result: CodingTaskResult }
+    | { ok: false; error: ApiErrorCategory }
+> {
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let result: CodingTaskResult | null = null;
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+            break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        const blocks = buffer.split(/\r?\n\r?\n/);
+        buffer = blocks.pop() ?? "";
+        for (const block of blocks) {
+            const parsed = parseSseBlock(block);
+            if (!parsed) {
+                continue;
+            }
+            if (parsed.event === "delta" && typeof parsed.data?.text === "string") {
+                handlers.onDelta?.(parsed.data.text);
+                continue;
+            }
+            if (parsed.event === "result" && isCodingTaskResult(parsed.data)) {
+                result = parsed.data;
+                continue;
+            }
+            if (parsed.event === "error") {
+                return { ok: false, error: "unknown" };
+            }
+            if (parsed.event === "done") {
+                return result
+                    ? { ok: true, result }
+                    : { ok: false, error: "unknown" };
+            }
+        }
+    }
+
+    return result ? { ok: true, result } : { ok: false, error: "unknown" };
+}
+
+function parseSseBlock(block: string): { event: string; data: any } | null {
+    let event = "";
+    const dataLines: string[] = [];
+    for (const rawLine of block.split(/\r?\n/)) {
+        const line = rawLine.trimEnd();
+        if (line.startsWith("event:")) {
+            event = line.slice("event:".length).trim();
+            continue;
+        }
+        if (line.startsWith("data:")) {
+            dataLines.push(line.slice("data:".length).trim());
+        }
+    }
+    if (!event || dataLines.length === 0) {
+        return null;
+    }
+    try {
+        return {
+            event,
+            data: JSON.parse(dataLines.join("\n")),
+        };
+    } catch {
+        return null;
+    }
+}
+
+function isCodingTaskResult(value: any): value is CodingTaskResult {
+    return Boolean(
+        value &&
+        typeof value.updated_file_content === "string" &&
+        value.updated_file_content.length > 0 &&
+        typeof value.intent === "string" &&
+        value.intent.trim().length > 0 &&
+        (value.reasoning === null || value.reasoning === undefined || typeof value.reasoning === "string") &&
+        (value.action_type === "create" || value.action_type === "modify"),
+    );
 }
 
 function classifyStatus(status: number): ApiErrorCategory {

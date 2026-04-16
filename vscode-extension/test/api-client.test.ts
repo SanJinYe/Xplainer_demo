@@ -134,6 +134,78 @@ describe("TailEventsApiClient", () => {
         assert.equal(signalAborted, true);
         assert.equal(result.ok, false);
     });
+
+    it("posts RawEvent payloads to the events endpoint", async () => {
+        let receivedMethod = "";
+        let receivedBody = "";
+        const client = createClient(async (_url, init) => {
+            receivedMethod = String(init?.method);
+            receivedBody = String(init?.body);
+            return jsonResponse({
+                event_id: "te_1",
+                timestamp: "2026-04-15T00:00:00Z",
+                agent_step_id: null,
+                session_id: "b0_123456abcdef",
+                action_type: "modify",
+                file_path: "pkg/demo.py",
+                line_range: null,
+                code_snapshot: "print(1)\n",
+                intent: "change output to 1",
+                reasoning: null,
+                decision_alternatives: null,
+                entity_refs: [],
+                external_refs: [],
+            });
+        });
+
+        const result = await client.createEvent({
+            action_type: "modify",
+            file_path: "pkg/demo.py",
+            code_snapshot: "print(1)\n",
+            intent: "change output to 1",
+            reasoning: null,
+            decision_alternatives: null,
+            session_id: "b0_123456abcdef",
+            line_range: null,
+            external_refs: [],
+        });
+
+        assert.equal(result.ok, true);
+        assert.equal(receivedMethod, "POST");
+        assert.ok(receivedBody.includes('"file_path":"pkg/demo.py"'));
+    });
+
+    it("parses task stream SSE responses", async () => {
+        let requestedAccept = "";
+        const client = createClient(async (_url, init) => {
+            requestedAccept = String((init?.headers as Record<string, string>)?.Accept);
+            return sseResponse([
+                'event: delta\ndata: {"text":"hello "}\n\n',
+                'event: delta\ndata: {"text":"world"}\n\n',
+                'event: result\ndata: {"updated_file_content":"print(1)\\n","intent":"change output","reasoning":null,"action_type":"modify"}\n\n',
+                'event: done\ndata: {}\n\n',
+            ]);
+        });
+
+        let streamed = "";
+        const result = await client.runCodingTaskStream(
+            {
+                file_path: "pkg/demo.py",
+                file_content: "print(0)\n",
+                user_prompt: "change output to 1",
+            },
+            {
+                onDelta(text) {
+                    streamed += text;
+                },
+            },
+        );
+
+        assert.equal(requestedAccept, "text/event-stream");
+        assert.equal(streamed, "hello world");
+        assert.equal(result.ok, true);
+        assert.equal(result.ok ? result.data.action_type : "", "modify");
+    });
 });
 
 function createClient(
@@ -217,6 +289,24 @@ function jsonResponse(payload: unknown): Response {
         status: 200,
         headers: {
             "Content-Type": "application/json",
+        },
+    });
+}
+
+function sseResponse(chunks: string[]): Response {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+            for (const chunk of chunks) {
+                controller.enqueue(encoder.encode(chunk));
+            }
+            controller.close();
+        },
+    });
+    return new Response(stream, {
+        status: 200,
+        headers: {
+            "Content-Type": "text/event-stream",
         },
     });
 }

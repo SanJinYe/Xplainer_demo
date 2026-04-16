@@ -348,3 +348,201 @@ Layer 2: Sidebar Webview（详细解释）
 | 解释生成延迟过高 | Hover 体验差 | 缓存 + 预生成（entity 创建时即触发） |
 | 多语言支持 | 初期仅 Python | 架构上用 Tree-sitter 预留，但 Phase 1-3 只做 Python |
 | 图过于稀疏（小项目 entity 少） | 需求 B 价值不明显 | 先在中等规模项目上验证 |
+
+---
+
+## 十一、下一阶段产品化需求（新增）
+
+### 目标变化
+
+在 Requirement A 的“可解释后端”基础上，系统进入下一阶段产品化建设。新的目标不再只是“能生成 explanation”，而是：
+
+1. explanation 要足够短、快、准，适合在编辑器内频繁阅读；
+2. 系统要具备真实 `coding -> event -> explanation` 的闭环，而不只依赖手工构造的测试事件；
+3. 系统要能接手已有代码仓库，在没有历史 coding trace 的情况下建立基础记忆；
+4. 后续前端将从“只读 explanation 面板”扩展为“可发起 coding 任务的工作台”。
+
+这些目标被拆解为三条产品线：
+
+- **产品线 A：Explanation / RAG / 检索增强**
+- **产品线 B：Coding 工作台**
+- **产品线 C：仓库记忆 / 冷启动 Onboarding**
+
+---
+
+## 十二、三条产品线
+
+### 产品线 A：Explanation / RAG / 检索增强
+
+面向“理解代码”的主链路，目标是让 explanation 变成一个可以长期使用的日常工具，而不是一次性 demo。
+
+### 产品线 B：Coding 工作台
+
+面向“生成代码”的主链路，目标是让 TailEvents 不只消费事件，也能驱动真实 coding 任务并生成事件。
+
+### 产品线 C：仓库记忆 / 冷启动 Onboarding
+
+面向“接手已有仓库”的场景，目标是在没有历史 agent trace 的前提下，为现有仓库生成 baseline TailEvents，建立后续 explanation 与图分析的基础。
+
+---
+
+## 十三、七项新增需求
+
+### 需求 A1：Explanation 必须受长度约束
+
+当前 explanation 在短脚本上仍可能生成大段文字，带来三类问题：
+
+- 用户阅读困难；
+- 外部 API token 消耗高；
+- explanation cache 与数据库体积膨胀。
+
+因此，系统必须支持 explanation 的长度控制：
+
+- `summary` 默认只允许极短输出；
+- `detailed` 默认允许结构化说明，但必须限制总体长度；
+- explanation 的输入上下文也必须裁剪，不能无界增长。
+
+**验收目标：**
+
+- hover summary 明显短于当前版本；
+- panel explanation 在单实体场景下不再是一整页长文；
+- explanation cache 单条记录的平均体积显著下降。
+
+### 需求 A2：Explanation 必须支持提速与流式输出
+
+当前 panel explanation 的等待时间偏长。下一阶段必须明确区分：
+
+- hover summary：优先响应速度；
+- panel explanation：允许更完整，但必须支持流式首屏返回。
+
+双模型不是默认要求，而是条件决策：
+
+- 先做 explanation 收缩与 prompt/input 裁剪；
+- 如果本地模型在此基础上仍无法满足 hover 体验，再引入 summary/detailed 双模型。
+
+**验收目标：**
+
+- panel explanation 必须支持流式展示；
+- hover summary 保持轻量；
+- 是否启用双模型由实测结果决定，而不是预设。
+
+### 需求 A3：Explanation 必须具备“上下文影响范围”
+
+系统不只要回答“这个函数做什么”，还要逐步回答：
+
+- 它影响了谁；
+- 谁影响了它；
+- 后续如何影响到最终结果。
+
+但为了控制复杂度，首版只做高置信范围：
+
+- 直接调用者；
+- 直接被调用者。
+
+更完整的全局路径、entrypoint/output 路径和 GraphRAG 查询，放入 Requirement B 的后续实现。
+
+**设计原则：**
+
+- 局部高置信范围先做；
+- 全局图分析后做；
+- 不引入低信噪比启发式范围，如“同文件近邻即相关”。
+
+### 需求 B1：必须建立真实 `coding -> event` 最小闭环
+
+当前系统已有 explanation 闭环，但真实 coding 事件主要来自手工 seed，不足以支持后续 explanation 优化。
+
+因此必须前置一个最小 coding 切片，用来持续产出真实事件数据：
+
+- 用户输入 prompt；
+- 系统生成代码修改；
+- 修改被应用；
+- 立即写入 TailEvent；
+- explanation 基于真实任务数据回读。
+
+这个最小闭环的目标不是立刻变成完整 coding 产品，而是为产品线 A 提供真实数据来源。
+
+### 需求 B2：系统最终要演进为 Coding 工作台
+
+在最小闭环之上，后续 TailEvents 将演进为一个类 Roo Code 的本地 coding 工作台，至少包括：
+
+- prompt 输入；
+- 流式输出；
+- 历史任务；
+- 模型与 provider 选择；
+- MCP / skills 开关；
+- 用户在前端管理模型配置与 API key，而不是长期依赖 `.env`。
+
+这属于完整产品化目标，不要求在当前阶段一次完成，但必须从架构上预留。
+
+### 需求 A4：系统需要外部 docs Retriever
+
+仅靠包的 help / pydoc 不足以支撑真实 explanation。系统后续需要支持多来源外部文档检索：
+
+- 包 help / pydoc；
+- README；
+- 用户在前端明确授权读取的外部 docs 文件。
+
+但该需求优先级低于 explanation 收缩、提速和真实 coding 闭环。也就是说：
+
+- 外部 retriever 必须做；
+- 但不应在 explanation 主链路尚未稳定时优先扩展输入噪声。
+
+### 需求 C1：系统需要已有仓库的冷启动记忆
+
+TailEvents 不能只适用于“agent 从零开始写代码”的场景。对于已有代码仓库，系统必须支持：
+
+- 扫描现有代码；
+- 生成 baseline TailEvents；
+- 建立实体与关系；
+- 在用户 hover / 打开 panel 时按需生成 explanation。
+
+这里的关键约束是：
+
+- 冷启动阶段只生成 baseline TailEvents；
+- 不为整个仓库预生成 explanation；
+- 不把 tailevents 注释写回源码；
+- coding task 不等待全仓库 baseline 扫描完成才开始。
+
+---
+
+## 十四、阶段性路线
+
+### 阶段 1
+
+- B1 最小 `coding -> event` 闭环
+- A1 explanation 收缩
+- C1 baseline TailEvents 冷启动
+
+### 阶段 2
+
+- A2 panel 流式 explanation
+- explanation 质量评估与埋点
+- 条件性判断是否启用双模型
+
+### 阶段 3
+
+- A3 局部范围 explanation
+- C1/C2 baseline-aware explanation
+- C3 实体层级关系补齐
+
+### 阶段 4
+
+- B2 完整 Coding 工作台
+- 模型选择、历史任务、MCP / skills
+- API key 前端管理
+
+### 阶段 5
+
+- A4 外部 docs Retriever
+- Requirement B 的全局路径与 GraphRAG
+
+---
+
+## 十五、默认假设
+
+- 仍然保持单 SQLite；
+- 当前阶段不引入向量数据库；
+- 双模型是 checkpoint 决策，不是预设要求；
+- 冷启动记忆不写回源码注释；
+- 外部 docs 只读取用户明确授权的文件；
+- 局部 explanation 范围先做 caller / callee，不做低置信启发式关系。

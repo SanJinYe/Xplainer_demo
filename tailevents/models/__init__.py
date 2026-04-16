@@ -15,6 +15,7 @@ from tailevents.models.explanation import (
     ExplanationRequest,
     ExplanationResponse,
 )
+from tailevents.models.task import CodingTaskRequest, CodingTaskResult
 from tailevents.models.protocols import (
     CacheProtocol,
     DocRetrieverProtocol,
@@ -56,6 +57,8 @@ __all__ = [
     "RelationStoreProtocol",
     "RelationType",
     "RenameRecord",
+    "CodingTaskRequest",
+    "CodingTaskResult",
     "TailEvent",
     "UsagePattern",
 ]
