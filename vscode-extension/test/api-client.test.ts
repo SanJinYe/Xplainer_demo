@@ -1,7 +1,14 @@
 import { strict as assert } from "node:assert";
 
 import { TailEventsApiClient } from "../src/api-client";
-import type { BackendCodeEntity, BackendEntityExplanation } from "../src/types";
+import type {
+    BackendCodeEntity,
+    BackendEntityExplanation,
+    BackendTaskStepEvent,
+    BackendToolCallPayload,
+    CodingTaskDraftResult,
+    CodingTaskToolResultPayload,
+} from "../src/types";
 
 describe("TailEventsApiClient", () => {
     it("caches entity lookups for 30 seconds and normalizes the base URL", async () => {
@@ -134,6 +141,154 @@ describe("TailEventsApiClient", () => {
         assert.equal(signalAborted, true);
         assert.equal(result.ok, false);
     });
+
+    it("runs a coding task session through create, tool_result, and verified draft events", async () => {
+        const requests: Array<{ url: string; method: string; body?: unknown }> = [];
+        const statuses: string[] = [];
+        const steps: BackendTaskStepEvent[] = [];
+        const modelDeltas: string[] = [];
+        const toolCalls: BackendToolCallPayload[] = [];
+        const results: CodingTaskDraftResult[] = [];
+
+        const client = createClient(async (url, init) => {
+            const requestUrl = String(url);
+            const method = init?.method ?? "GET";
+            requests.push({
+                url: requestUrl,
+                method,
+                body: parseJsonBody(init?.body),
+            });
+
+            if (requestUrl.endsWith("/coding/tasks") && method === "POST") {
+                return jsonResponse({ task_id: "task_1", status: "created" }, 201);
+            }
+            if (requestUrl.endsWith("/coding/tasks/task_1/stream") && method === "GET") {
+                return sseResponse(
+                    [
+                        {
+                            event: "status",
+                            data: { status: "running" },
+                        },
+                        {
+                            event: "step",
+                            data: sampleTaskStep(),
+                        },
+                        {
+                            event: "model_delta",
+                            data: { text: "{\"edits\":[" },
+                        },
+                        {
+                            event: "tool_call",
+                            data: sampleToolCall(),
+                        },
+                        {
+                            event: "result",
+                            data: sampleDraft(),
+                        },
+                        {
+                            event: "done",
+                            data: {},
+                        },
+                    ],
+                );
+            }
+            if (requestUrl.endsWith("/coding/tasks/task_1/tool-result") && method === "POST") {
+                return new Response(null, { status: 204 });
+            }
+            throw new Error(`Unexpected request: ${method} ${requestUrl}`);
+        });
+
+        const outcome = await client.runCodingTaskSession(
+            {
+                target_file_path: "pkg/demo.py",
+                target_file_version: 1,
+                user_prompt: "change output to 1",
+                context_files: [],
+            },
+            {
+                onCreated: (taskId) => statuses.push(`created:${taskId}`),
+                onStatus: (status) => statuses.push(status),
+                onStep: (step) => steps.push(step),
+                onModelDelta: (text) => modelDeltas.push(text),
+                onToolCall: async (payload) => {
+                    toolCalls.push(payload);
+                    return {
+                        call_id: payload.call_id,
+                        tool_name: "view_file",
+                        file_path: payload.file_path,
+                        document_version: 1,
+                        content: "print(0)\n",
+                        content_hash: "hash",
+                        error: null,
+                    };
+                },
+                onResult: (result) => results.push(result),
+            },
+        );
+
+        assert.equal(outcome.ok, true);
+        assert.deepEqual(statuses, ["created:task_1", "running"]);
+        assert.equal(steps.length, 1);
+        assert.deepEqual(modelDeltas, ['{"edits":[']);
+        assert.equal(toolCalls.length, 1);
+        assert.equal(results.length, 1);
+        assert.equal(
+            requests.some((request) => {
+                return (
+                    request.method === "POST" &&
+                    request.url.endsWith("/coding/tasks/task_1/tool-result") &&
+                    (request.body as CodingTaskToolResultPayload).content === "print(0)\n"
+                );
+            }),
+            true,
+        );
+    });
+
+    it("preserves backend error messages from the coding task stream", async () => {
+        const client = createClient(async (url, init) => {
+            const requestUrl = String(url);
+            const method = init?.method ?? "GET";
+
+            if (requestUrl.endsWith("/coding/tasks") && method === "POST") {
+                return jsonResponse({ task_id: "task_1", status: "created" }, 201);
+            }
+            if (requestUrl.endsWith("/coding/tasks/task_1/stream") && method === "GET") {
+                return sseResponse(
+                    [
+                        {
+                            event: "error",
+                            data: { message: "Draft is not valid Python: line 1: invalid syntax" },
+                        },
+                        {
+                            event: "done",
+                            data: {},
+                        },
+                    ],
+                );
+            }
+            throw new Error(`Unexpected request: ${method} ${requestUrl}`);
+        });
+
+        const outcome = await client.runCodingTaskSession(
+            {
+                target_file_path: "pkg/demo.py",
+                target_file_version: 1,
+                user_prompt: "change output to 1",
+                context_files: [],
+            },
+            {},
+        );
+
+        assert.equal(outcome.ok, false);
+        if (outcome.ok) {
+            throw new Error("Expected a failed result");
+        }
+        assert.equal(outcome.error, "unknown");
+        assert.equal(
+            outcome.message,
+            "Draft is not valid Python: line 1: invalid syntax",
+        );
+    });
 });
 
 function createClient(
@@ -212,11 +367,74 @@ function sampleExplanation(): BackendEntityExplanation {
     };
 }
 
-function jsonResponse(payload: unknown): Response {
+function sampleTaskStep(): BackendTaskStepEvent {
+    return {
+        task_id: "task_1",
+        step_id: "step_1",
+        step_kind: "view",
+        status: "succeeded",
+        file_path: "pkg/demo.py",
+        content_hash: "hash",
+        intent: "Observe the target file before editing",
+        reasoning_summary: null,
+        tool_name: "view_file",
+        input_summary: "request file view for pkg/demo.py",
+        output_summary: "version=1, chars=9",
+        timestamp: "2026-04-16T00:00:00Z",
+    };
+}
+
+function sampleToolCall(): BackendToolCallPayload {
+    return {
+        task_id: "task_1",
+        call_id: "call_1",
+        step_id: "step_1",
+        tool_name: "view_file",
+        file_path: "pkg/demo.py",
+        intent: "Observe the target file before editing",
+    };
+}
+
+function sampleDraft(): CodingTaskDraftResult {
+    return {
+        task_id: "task_1",
+        updated_file_content: "print(1)\n",
+        intent: "change output to 1",
+        reasoning: "minimal edit",
+        session_id: "task_1",
+        agent_step_id: "step_verify",
+        action_type: "modify",
+    };
+}
+
+function jsonResponse(payload: unknown, status = 200): Response {
     return new Response(JSON.stringify(payload), {
-        status: 200,
+        status,
         headers: {
             "Content-Type": "application/json",
         },
     });
+}
+
+function sseResponse(
+    items: Array<{ event: string; data: unknown }>,
+): Response {
+    const body = items
+        .map((item) => {
+            return `event: ${item.event}\ndata: ${JSON.stringify(item.data)}\n\n`;
+        })
+        .join("");
+    return new Response(body, {
+        status: 200,
+        headers: {
+            "Content-Type": "text/event-stream",
+        },
+    });
+}
+
+function parseJsonBody(body: BodyInit | null | undefined): unknown {
+    if (typeof body !== "string") {
+        return undefined;
+    }
+    return JSON.parse(body);
 }

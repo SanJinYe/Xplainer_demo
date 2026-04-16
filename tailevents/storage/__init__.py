@@ -9,6 +9,7 @@ from tailevents.storage.exceptions import (
     StorageError,
 )
 from tailevents.storage.relation_store import SQLiteRelationStore
+from tailevents.storage.task_step_store import SQLiteTaskStepStore
 
 __all__ = [
     "EventEnrichmentError",
@@ -17,6 +18,7 @@ __all__ = [
     "SQLiteEntityDB",
     "SQLiteEventStore",
     "SQLiteRelationStore",
+    "SQLiteTaskStepStore",
     "StorageError",
     "get_db",
     "initialize_db",

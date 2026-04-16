@@ -7,6 +7,7 @@ from typing import AsyncIterator, Optional
 from fastapi import Depends, Request
 
 from tailevents.cache import ExplanationCache
+from tailevents.coding import CodingTaskService
 from tailevents.config import Settings, get_settings
 from tailevents.explanation import (
     DocRetriever,
@@ -25,6 +26,7 @@ from tailevents.storage import (
     SQLiteEntityDB,
     SQLiteEventStore,
     SQLiteRelationStore,
+    SQLiteTaskStepStore,
     initialize_db,
 )
 
@@ -38,6 +40,7 @@ class AppContainer:
     event_store: SQLiteEventStore
     entity_db: SQLiteEntityDB
     relation_store: SQLiteRelationStore
+    task_step_store: SQLiteTaskStepStore
     cache: ExplanationCache
     indexer: Indexer
     llm_client: LLMClientProtocol
@@ -46,6 +49,7 @@ class AppContainer:
     query_router: QueryRouter
     graph_service: GraphServiceStub
     ingestion_pipeline: IngestionPipeline
+    coding_task_service: CodingTaskService
 
     async def ingest_raw_event(self, raw_event: RawEvent) -> TailEvent:
         """Compatibility wrapper around the formal ingestion pipeline."""
@@ -161,6 +165,7 @@ def build_lifespan(
         event_store = SQLiteEventStore(db_manager)
         entity_db = SQLiteEntityDB(db_manager)
         relation_store = SQLiteRelationStore(db_manager)
+        task_step_store = SQLiteTaskStepStore(db_manager)
         cache = ExplanationCache(db_manager)
         indexer = Indexer(
             entity_db=entity_db,
@@ -192,6 +197,10 @@ def build_lifespan(
             indexer=indexer,
             hooks=[GraphUpdateHook(graph_service)],
         )
+        coding_task_service = CodingTaskService(
+            llm_client=active_llm_client,
+            step_store=task_step_store,
+        )
 
         container = AppContainer(
             settings=app_settings,
@@ -199,6 +208,7 @@ def build_lifespan(
             event_store=event_store,
             entity_db=entity_db,
             relation_store=relation_store,
+            task_step_store=task_step_store,
             cache=cache,
             indexer=indexer,
             llm_client=active_llm_client,
@@ -207,6 +217,7 @@ def build_lifespan(
             query_router=query_router,
             graph_service=graph_service,
             ingestion_pipeline=ingestion_pipeline,
+            coding_task_service=coding_task_service,
         )
         app.state.db_manager = db_manager
         app.state.container = container
@@ -249,6 +260,12 @@ def get_relation_store(
     return container.relation_store
 
 
+def get_task_step_store(
+    container: AppContainer = Depends(get_container),
+) -> SQLiteTaskStepStore:
+    return container.task_step_store
+
+
 def get_indexer(
     container: AppContainer = Depends(get_container),
 ) -> Indexer:
@@ -285,10 +302,17 @@ def get_ingestion_pipeline(
     return container.ingestion_pipeline
 
 
+def get_coding_task_service(
+    container: AppContainer = Depends(get_container),
+) -> CodingTaskService:
+    return container.coding_task_service
+
+
 __all__ = [
     "AppContainer",
     "build_lifespan",
     "get_cache",
+    "get_coding_task_service",
     "get_container",
     "get_entity_db",
     "get_event_store",
@@ -299,4 +323,5 @@ __all__ = [
     "get_query_router",
     "get_relation_store",
     "get_settings_dependency",
+    "get_task_step_store",
 ]

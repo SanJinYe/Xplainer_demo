@@ -1,0 +1,135 @@
+from typing import Iterable
+
+
+def _normalize_customer_name(customer_name: str) -> str:
+    normalized_customer_name = customer_name.strip()
+    if not normalized_customer_name:
+        raise ValueError("Customer name is required")
+    return normalized_customer_name.title()
+
+
+def parse_item_line(line: str) -> tuple[str, int]:
+    """Parse a single item line into name and price cents."""
+    parts = line.split(":", 1)
+    if len(parts) != 2:
+        raise ValueError(f"Invalid item line: {line}")
+
+    item_name = parts[0].strip()
+    price_text = parts[1].strip()
+    if not item_name:
+        raise ValueError("Item name is required")
+    if not price_text:
+        raise ValueError("Item price is required")
+
+    return item_name, int(price_text)
+
+
+def format_cents(cents: int) -> str:
+    """Format a cent amount as a dollar string."""
+    dollars = cents // 100
+    remainder_cents = cents % 100
+    return f"${dollars}.{remainder_cents:02d}"
+
+
+def build_customer_summary(customer_name: str, raw_items: list[str]) -> str:
+    """Build a plain-text summary for a customer's order."""
+    if not customer_name or not customer_name.strip():
+        raise ValueError("Customer name is required")
+    normalized_customer_name = _normalize_customer_name(customer_name)
+
+    rendered_lines: list[str] = []
+    total_cents = 0
+    item_count = 0
+
+    for raw_line in raw_items:
+        stripped_line = raw_line.strip()
+        if not stripped_line:
+            continue
+
+        item_name, price_cents = parse_item_line(stripped_line)
+        rendered_lines.append(f"- {item_name}: {format_cents(price_cents)}")
+        total_cents += price_cents
+        item_count += 1
+
+    if item_count == 0:
+        return (
+            f"Order summary for {normalized_customer_name}\n"
+            "Items:\n"
+            "- none\n"
+            f"Total: {format_cents(0)}"
+        )
+
+    item_block = "\n".join(rendered_lines)
+    return (
+        f"Order summary for {normalized_customer_name}\n"
+        "Items:\n"
+        f"{item_block}\n"
+        f"Total: {format_cents(total_cents)}"
+    )
+
+
+def _collect_lines(raw_items: Iterable[str]) -> list[str]:
+    collected: list[str] = []
+    for raw_line in raw_items:
+        if raw_line is None:
+            continue
+        stripped = raw_line.strip()
+        if stripped:
+            collected.append(stripped)
+    return collected
+
+
+class OrderSummaryService:
+    """Service for building formatted order summaries."""
+
+    def __init__(self, currency_label: str = "USD"):
+        """Initialize the service with a currency label."""
+        self.currency_label = currency_label
+
+    def build_summary(self, customer_name: str, raw_items: list[str]) -> str:
+        """Build a detailed order summary with shipping and totals."""
+        if not customer_name or not customer_name.strip():
+            raise ValueError("Customer name is required")
+        normalized_customer_name = _normalize_customer_name(customer_name)
+
+        normalized_lines = _collect_lines(raw_items)
+        subtotal_cents = 0
+        rendered_items: list[str] = []
+
+        for item_line in normalized_lines:
+            item_name, price_cents = parse_item_line(item_line)
+            subtotal_cents += price_cents
+            rendered_items.append(
+                f"* {item_name} ({self.currency_label} {format_cents(price_cents)})"
+            )
+
+        shipping_cents = self._calculate_shipping(subtotal_cents, len(rendered_items))
+        total_cents = subtotal_cents + shipping_cents
+
+        if rendered_items:
+            items_block = "\n".join(rendered_items)
+        else:
+            items_block = "* none"
+
+        return (
+            f"Customer: {normalized_customer_name}\n"
+            "Items:\n"
+            f"{items_block}\n"
+            f"Subtotal: {self.currency_label} {format_cents(subtotal_cents)}\n"
+            f"Shipping: {self.currency_label} {format_cents(shipping_cents)}\n"
+            f"Total: {self.currency_label} {format_cents(total_cents)}"
+        )
+
+    def build_summary_lines(self, customer_name: str, raw_items: list[str]) -> list[str]:
+        """Build a summary and return it as a list of lines."""
+        summary_text = self.build_summary(customer_name, raw_items)
+        return summary_text.splitlines()
+
+    def _calculate_shipping(self, subtotal_cents: int, item_count: int) -> int:
+        if item_count == 0:
+            return 0
+        if subtotal_cents >= 5000:
+            return 0
+        if item_count >= 5:
+            return 250
+        return 500

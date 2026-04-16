@@ -1,4 +1,5 @@
 from datetime import datetime
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -38,10 +39,50 @@ class FakeLLMClient:
     ) -> str:
         return STRUCTURED_OUTPUT
 
+    async def stream_generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 1000,
+        temperature: float = 0.3,
+    ):
+        yield STRUCTURED_OUTPUT
+
 
 class FakeDocRetriever:
     async def retrieve(self, package: str, symbol: str):
         return None
+
+
+class FakeCodingLLMClient:
+    async def generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 1000,
+        temperature: float = 0.3,
+        ) -> str:
+        return json.dumps(
+            {
+                "edits": [
+                    {
+                        "old_text": "    return 0\n",
+                        "new_text": "    return 1\n",
+                    }
+                ],
+                "intent": "Change the return value to 1",
+                "reasoning": "A minimal local edit is enough for this task.",
+            }
+        )
+
+    async def stream_generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 1000,
+        temperature: float = 0.3,
+    ):
+        yield await self.generate(system_prompt, user_prompt, max_tokens, temperature)
 
 
 class FakeExplanationEngine:
@@ -449,3 +490,62 @@ def test_api_error_responses(api_client):
         },
     )
     assert bad_event.status_code == 422
+
+
+def test_coding_task_api_smoke():
+    with TemporaryDirectory() as temp_dir:
+        db_path = Path(temp_dir) / "tailevents.db"
+        settings = Settings(db_path=str(db_path))
+        app = create_app(
+            settings=settings,
+            llm_client=FakeCodingLLMClient(),
+            doc_retriever=FakeDocRetriever(),
+        )
+
+        with TestClient(app) as client:
+            created = client.post(
+                "/api/v1/coding/tasks",
+                json={
+                    "target_file_path": "pkg/demo.py",
+                    "target_file_version": 1,
+                    "user_prompt": "Change the return value to 1",
+                    "context_files": [],
+                },
+            )
+            assert created.status_code == 201
+            task_id = created.json()["task_id"]
+            assert task_id.startswith("task_")
+
+            with client.stream("GET", "/api/v1/coding/tasks/task_missing/stream") as stream:
+                assert stream.status_code == 200
+                payload = stream.read().decode("utf-8")
+            assert "event: error" in payload
+            assert "Task not found: task_missing" in payload
+            assert "event: done" in payload
+
+
+def test_coding_task_tool_result_api_errors():
+    with TemporaryDirectory() as temp_dir:
+        db_path = Path(temp_dir) / "tailevents.db"
+        settings = Settings(db_path=str(db_path))
+        app = create_app(
+            settings=settings,
+            llm_client=FakeCodingLLMClient(),
+            doc_retriever=FakeDocRetriever(),
+        )
+
+        with TestClient(app) as client:
+            missing = client.post(
+                "/api/v1/coding/tasks/task_missing/tool-result",
+                json={
+                    "call_id": "call_1",
+                    "tool_name": "view_file",
+                    "file_path": "pkg/demo.py",
+                    "content": "pass\n",
+                    "content_hash": "hash",
+                },
+            )
+            assert missing.status_code == 404
+
+            cancel_missing = client.post("/api/v1/coding/tasks/task_missing/cancel")
+            assert cancel_missing.status_code == 404

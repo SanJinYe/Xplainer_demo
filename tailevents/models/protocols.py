@@ -1,12 +1,19 @@
 """Protocol interfaces shared across modules."""
 
-from typing import Optional, Protocol, TYPE_CHECKING, runtime_checkable
+from typing import AsyncIterator, Optional, Protocol, TYPE_CHECKING, runtime_checkable
 
 if TYPE_CHECKING:
     from tailevents.models.entity import CodeEntity
     from tailevents.models.event import EntityRef, TailEvent
     from tailevents.models.explanation import EntityExplanation
     from tailevents.models.relation import Relation
+    from tailevents.models.task import (
+        CodingTaskCreateRequest,
+        CodingTaskCreateResponse,
+        CodingTaskDraftResult,
+        CodingTaskToolResultRequest,
+        TaskStepEvent,
+    )
 
 
 @runtime_checkable
@@ -139,14 +146,50 @@ class LLMClientProtocol(Protocol):
         temperature: float = 0.3,
     ) -> str: ...
 
+    async def stream_generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 1000,
+        temperature: float = 0.3,
+    ) -> AsyncIterator[str]: ...
+
 
 @runtime_checkable
 class DocRetrieverProtocol(Protocol):
     async def retrieve(self, package: str, symbol: str) -> Optional[str]: ...
 
 
+@runtime_checkable
+class TaskStepStoreProtocol(Protocol):
+    async def put(self, event: "TaskStepEvent") -> None: ...
+
+    async def get_by_task(self, task_id: str) -> list["TaskStepEvent"]: ...
+
+
+@runtime_checkable
+class CodingTaskServiceProtocol(Protocol):
+    async def create_task(
+        self,
+        request: "CodingTaskCreateRequest",
+    ) -> "CodingTaskCreateResponse": ...
+
+    async def stream_events(self, task_id: str): ...
+
+    async def submit_tool_result(
+        self,
+        task_id: str,
+        result: "CodingTaskToolResultRequest",
+    ) -> None: ...
+
+    async def cancel_task(self, task_id: str) -> None: ...
+
+    async def get_result(self, task_id: str) -> Optional["CodingTaskDraftResult"]: ...
+
+
 __all__ = [
     "CacheProtocol",
+    "CodingTaskServiceProtocol",
     "DocRetrieverProtocol",
     "EntityDBProtocol",
     "EventStoreProtocol",
@@ -156,4 +199,5 @@ __all__ = [
     "IndexerResult",
     "LLMClientProtocol",
     "RelationStoreProtocol",
+    "TaskStepStoreProtocol",
 ]

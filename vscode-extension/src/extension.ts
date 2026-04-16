@@ -1,4 +1,6 @@
 import path from "node:path";
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 
 import * as vscode from "vscode";
 
@@ -48,6 +50,57 @@ export function activate(context: vscode.ExtensionContext): void {
         apiClient,
         getBaseUrl,
         templatePath: path.join(context.extensionPath, "media", "sidebar.html"),
+        runtime: {
+            getActiveEditor: () => vscode.window.activeTextEditor ?? null,
+            getWorkspaceFolders: () => vscode.workspace.workspaceFolders,
+            resolveWorkspaceRelativePath: (absolutePath) => {
+                const uri = vscode.Uri.file(absolutePath);
+                const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
+                if (!workspaceFolder) {
+                    return null;
+                }
+                const relativePath = path.relative(workspaceFolder.uri.fsPath, absolutePath);
+                if (
+                    !relativePath ||
+                    relativePath.startsWith("..") ||
+                    path.isAbsolute(relativePath)
+                ) {
+                    return null;
+                }
+                return relativePath.replace(/\\/g, "/");
+            },
+            resolveAbsoluteWorkspacePath: (workspaceFilePath) => {
+                const folders = vscode.workspace.workspaceFolders ?? [];
+                for (const folder of folders) {
+                    const candidate = path.join(folder.uri.fsPath, workspaceFilePath);
+                    if (existsSync(candidate)) {
+                        return candidate;
+                    }
+                }
+                return null;
+            },
+            getOpenDocumentByAbsolutePath: (absolutePath) => {
+                return vscode.workspace.textDocuments.find((document) => {
+                    return document.uri.scheme === "file" && document.uri.fsPath === absolutePath;
+                }) ?? null;
+            },
+            readFileText: async (absolutePath) => {
+                const buffer = await readFile(absolutePath);
+                return buffer.toString("utf8");
+            },
+            replaceDocumentContent: async (editor, content) => {
+                const lastLineIndex = Math.max(editor.document.lineCount - 1, 0);
+                const lastLine = editor.document.lineAt(lastLineIndex);
+                const range = new vscode.Range(
+                    new vscode.Position(0, 0),
+                    new vscode.Position(lastLineIndex, lastLine.text.length),
+                );
+                return editor.edit((editBuilder) => {
+                    editBuilder.replace(range, content);
+                });
+            },
+            saveDocument: async (document) => document.save(),
+        },
     });
 
     context.subscriptions.push(
@@ -65,12 +118,18 @@ export function activate(context: vscode.ExtensionContext): void {
     );
 
     context.subscriptions.push(
+        vscode.window.onDidChangeActiveTextEditor(() => {
+            void sidebarProvider.refreshCodeContext();
+        }),
+    );
+
+    context.subscriptions.push(
         vscode.commands.registerCommand(
             COMMAND_EXPLAIN_CURRENT_SYMBOL,
             async (args?: ExplainCommandArgs) => {
                 if (args?.entityId) {
                     await revealSidebar();
-                    await sidebarProvider.loadEntity(args.entityId);
+                    await sidebarProvider.showExplainEntity(args.entityId);
                     return;
                 }
 
@@ -80,7 +139,7 @@ export function activate(context: vscode.ExtensionContext): void {
                 }
 
                 await revealSidebar();
-                await sidebarProvider.loadEntity(entity.entity_id);
+                await sidebarProvider.showExplainEntity(entity.entity_id);
             },
         ),
         vscode.commands.registerCommand(COMMAND_OPEN_PANEL, async () => {
@@ -89,7 +148,7 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.commands.registerCommand(COMMAND_REFRESH_PANEL, async () => {
             const currentEntityId = sidebarProvider.getCurrentEntityId();
             if (currentEntityId) {
-                await sidebarProvider.loadEntity(currentEntityId);
+                await sidebarProvider.showExplainEntity(currentEntityId);
                 return;
             }
 
@@ -99,7 +158,7 @@ export function activate(context: vscode.ExtensionContext): void {
             }
 
             await revealSidebar();
-            await sidebarProvider.loadEntity(entity.entity_id);
+            await sidebarProvider.showExplainEntity(entity.entity_id);
         }),
     );
 

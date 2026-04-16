@@ -19,3 +19,5 @@ loadtest-results/
 k6-summary-*.json
 pressure-report-*.json
 vscode-extension/*.vsix
+.vscode-test/
+.vscode-test-web/

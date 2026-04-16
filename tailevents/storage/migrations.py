@@ -109,6 +109,28 @@ CREATE TABLE IF NOT EXISTS explanation_cache (
 );
 """
 
+TASK_STEP_EVENTS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS task_step_events (
+    task_id TEXT NOT NULL,
+    step_id TEXT NOT NULL,
+    step_kind TEXT NOT NULL,
+    status TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    content_hash TEXT,
+    intent TEXT NOT NULL,
+    reasoning_summary TEXT,
+    tool_name TEXT,
+    input_summary TEXT,
+    output_summary TEXT,
+    timestamp TEXT NOT NULL
+);
+"""
+
+TASK_STEP_EVENTS_INDEXES_SQL = """
+CREATE INDEX IF NOT EXISTS idx_task_step_events_task ON task_step_events(task_id);
+CREATE INDEX IF NOT EXISTS idx_task_step_events_timestamp ON task_step_events(timestamp);
+"""
+
 SCHEMA_SQL = "\n".join(
     [
         EVENTS_TABLE_SQL,
@@ -119,6 +141,8 @@ SCHEMA_SQL = "\n".join(
         RELATIONS_TABLE_SQL,
         RELATIONS_INDEXES_SQL,
         EXPLANATION_CACHE_TABLE_SQL,
+        TASK_STEP_EVENTS_TABLE_SQL,
+        TASK_STEP_EVENTS_INDEXES_SQL,
     ]
 )
 
@@ -137,6 +161,8 @@ __all__ = [
     "EVENTS_INDEXES_SQL",
     "EVENTS_TABLE_SQL",
     "EXPLANATION_CACHE_TABLE_SQL",
+    "TASK_STEP_EVENTS_INDEXES_SQL",
+    "TASK_STEP_EVENTS_TABLE_SQL",
     "RELATIONS_INDEXES_SQL",
     "RELATIONS_TABLE_SQL",
     "SCHEMA_SQL",

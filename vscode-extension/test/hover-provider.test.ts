@@ -2,7 +2,15 @@ import { strict as assert } from "node:assert";
 
 import { TailEventsHoverProvider } from "../src/hover-provider";
 import type { TailEventsApi } from "../src/api-client";
-import type { ApiResult, BackendCodeEntity, BackendEntityExplanation } from "../src/types";
+import type {
+    ApiResult,
+    BackendCodeEntity,
+    BackendEntityExplanation,
+    CodingTaskCreateRequestPayload,
+    CodingTaskDraftResult,
+    CodingTaskToolResultPayload,
+    CreateRawEventPayload,
+} from "../src/types";
 
 describe("TailEventsHoverProvider", () => {
     it("returns a full hover when the entity and summary are available", async () => {
@@ -179,6 +187,11 @@ function createApiClient(options: {
         getExplanationSummary: async () => options.summaryResult,
         getExplanationFull: async () => success(sampleExplanation()),
         getEntityEvents: async () => success([]),
+        createEvent: async (_payload: CreateRawEventPayload) => success(sampleEvent()),
+        createCodingTask: async (_payload: CodingTaskCreateRequestPayload) => success({ task_id: "task_1", status: "created" }),
+        submitCodingToolResult: async (_taskId: string, _payload: CodingTaskToolResultPayload) => success(null),
+        cancelCodingTask: async () => success(null),
+        runCodingTaskSession: async (_payload, _handlers) => success(sampleDraft()),
     };
 }
 
@@ -293,6 +306,36 @@ function sampleExplanation(): BackendEntityExplanation {
         generated_at: "2026-04-15T00:00:00Z",
         from_cache: false,
         confidence: 1,
+    };
+}
+
+function sampleEvent() {
+    return {
+        event_id: "te_1",
+        timestamp: "2026-04-15T00:00:00Z",
+        agent_step_id: null,
+        session_id: null,
+        action_type: "modify",
+        file_path: "pkg/demo.py",
+        line_range: null,
+        code_snapshot: "print(1)\n",
+        intent: "update output",
+        reasoning: null,
+        decision_alternatives: null,
+        entity_refs: [],
+        external_refs: [],
+    };
+}
+
+function sampleDraft(): CodingTaskDraftResult {
+    return {
+        task_id: "task_1",
+        updated_file_content: "print(1)\n",
+        intent: "update output",
+        reasoning: null,
+        session_id: "task_1",
+        agent_step_id: "step_verify",
+        action_type: "modify",
     };
 }
 

@@ -35,6 +35,51 @@
             display: none !important;
         }
 
+        .row {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .mode-switch {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-bottom: 16px;
+        }
+
+        .mode-button,
+        .action-button,
+        .retry-button {
+            border: 1px solid var(--vscode-list-hoverBackground);
+            background: transparent;
+            color: inherit;
+            border-radius: 6px;
+            padding: 8px 12px;
+            cursor: pointer;
+            font: inherit;
+        }
+
+        .mode-button.active {
+            background: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            border-color: var(--vscode-button-background);
+        }
+
+        .action-button.primary {
+            background: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            border-color: var(--vscode-button-background);
+        }
+
+        .mode-button:disabled,
+        .action-button:disabled,
+        .retry-button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
         .title-bar {
             display: flex;
             flex-direction: column;
@@ -47,7 +92,10 @@
         h2,
         h3,
         p,
-        ul {
+        ul,
+        pre,
+        textarea,
+        input {
             margin: 0;
         }
 
@@ -93,21 +141,15 @@
         }
 
         .timeline-item,
-        .related-item {
+        .related-item,
+        .panel-box {
             display: flex;
             flex-direction: column;
-            gap: 4px;
+            gap: 8px;
             padding: 10px 12px;
             border: 1px solid var(--vscode-list-hoverBackground);
             border-radius: 8px;
             background: transparent;
-        }
-
-        .row {
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-            align-items: center;
         }
 
         .link-button {
@@ -127,66 +169,131 @@
             text-decoration: underline;
         }
 
-        .state {
+        .state,
+        .panel {
             display: flex;
             flex-direction: column;
-            gap: 12px;
+            gap: 16px;
         }
 
-        .retry-button {
-            align-self: flex-start;
-            border: 1px solid var(--vscode-list-hoverBackground);
-            background: transparent;
-            color: var(--vscode-textLink-foreground);
+        textarea,
+        pre,
+        input {
+            width: 100%;
+            border: 1px solid var(--vscode-input-border, var(--vscode-list-hoverBackground));
             border-radius: 6px;
-            padding: 6px 10px;
-            cursor: pointer;
+            padding: 10px;
+            background: var(--vscode-input-background, transparent);
+            color: var(--vscode-input-foreground, inherit);
             font: inherit;
+        }
+
+        textarea {
+            min-height: 110px;
+            resize: vertical;
+        }
+
+        pre {
+            min-height: 120px;
+            white-space: pre-wrap;
+            word-break: break-word;
+            overflow-x: auto;
+        }
+
+        input {
+            min-height: 38px;
         }
     </style>
 </head>
 <body>
     <div id="app">
-        <section id="empty-state" class="state hidden">
-            <p id="empty-text" class="muted"></p>
+        <div class="mode-switch">
+            <button id="mode-explain" class="mode-button active" type="button">Explain</button>
+            <button id="mode-code" class="mode-button" type="button">Code</button>
+        </div>
+
+        <section id="explain-panel" class="panel">
+            <section id="empty-state" class="state hidden">
+                <p id="empty-text" class="muted"></p>
+            </section>
+
+            <section id="loading-state" class="state hidden">
+                <p id="loading-text"></p>
+            </section>
+
+            <section id="error-state" class="state hidden">
+                <p id="error-text"></p>
+                <button id="retry-button" class="retry-button" type="button">Retry</button>
+            </section>
+
+            <section id="content" class="hidden">
+                <header class="title-bar">
+                    <div class="row">
+                        <h2 id="entity-name"></h2>
+                        <span id="entity-type" class="badge"></span>
+                    </div>
+                    <p id="entity-location" class="muted"></p>
+                    <p id="entity-signature" class="text-block hidden"></p>
+                    <p id="event-count" class="muted"></p>
+                </header>
+
+                <section class="section">
+                    <h3>Explanation</h3>
+                    <p id="summary-text" class="lead hidden"></p>
+                    <p id="detail-text" class="text-block hidden"></p>
+                </section>
+
+                <section class="section">
+                    <h3>History</h3>
+                    <p id="history-fallback" class="muted hidden">History unavailable.</p>
+                    <ul id="timeline-list" class="timeline"></ul>
+                </section>
+
+                <section class="section">
+                    <h3>Related Entities</h3>
+                    <p id="related-empty" class="muted hidden">No related entities.</p>
+                    <ul id="related-list" class="related-list"></ul>
+                </section>
+            </section>
         </section>
 
-        <section id="loading-state" class="state hidden">
-            <p id="loading-text"></p>
-        </section>
+        <section id="code-panel" class="panel hidden">
+            <section class="panel-box">
+                <h3>Target File</h3>
+                <p id="code-file-path" class="muted">No file selected.</p>
+            </section>
 
-        <section id="error-state" class="state hidden">
-            <p id="error-text"></p>
-            <button id="retry-button" class="retry-button" type="button">Retry</button>
-        </section>
+            <section class="panel-box">
+                <h3>Readonly Context Files</h3>
+                <input id="context-file-1" placeholder="relative/path/to/context_file.py" />
+                <input id="context-file-2" placeholder="relative/path/to/another_context.py" />
+                <p class="muted">At most 2 files. These files are view-only and never edited.</p>
+            </section>
 
-        <section id="content" class="hidden">
-            <header class="title-bar">
+            <section class="panel-box">
+                <h3>Prompt</h3>
+                <textarea id="code-prompt" placeholder="Describe the change you want."></textarea>
                 <div class="row">
-                    <h2 id="entity-name"></h2>
-                    <span id="entity-type" class="badge"></span>
+                    <button id="run-button" class="action-button primary" type="button">Run</button>
+                    <button id="cancel-button" class="action-button" type="button">Cancel</button>
+                    <button id="apply-button" class="action-button" type="button">Apply</button>
                 </div>
-                <p id="entity-location" class="muted"></p>
-                <p id="entity-signature" class="text-block hidden"></p>
-                <p id="event-count" class="muted"></p>
-            </header>
-
-            <section class="section">
-                <h3>Explanation</h3>
-                <p id="summary-text" class="lead hidden"></p>
-                <p id="detail-text" class="text-block hidden"></p>
+                <p id="code-status" class="muted"></p>
             </section>
 
-            <section class="section">
-                <h3>History</h3>
-                <p id="history-fallback" class="muted hidden">History unavailable.</p>
-                <ul id="timeline-list" class="timeline"></ul>
+            <section class="panel-box">
+                <h3>Step Transcript</h3>
+                <pre id="code-transcript"></pre>
             </section>
 
-            <section class="section">
-                <h3>Related Entities</h3>
-                <p id="related-empty" class="muted hidden">No related entities.</p>
-                <ul id="related-list" class="related-list"></ul>
+            <section class="panel-box">
+                <h3>Model Output</h3>
+                <pre id="code-model-output"></pre>
+            </section>
+
+            <section class="panel-box">
+                <h3>Verified Draft</h3>
+                <pre id="code-draft"></pre>
             </section>
         </section>
     </div>
@@ -194,19 +301,68 @@
     <script nonce="__NONCE__">
         const vscode = acquireVsCodeApi();
 
+        const explainPanel = document.getElementById("explain-panel");
+        const codePanel = document.getElementById("code-panel");
+        const modeExplainButton = document.getElementById("mode-explain");
+        const modeCodeButton = document.getElementById("mode-code");
+
         const content = document.getElementById("content");
         const emptyState = document.getElementById("empty-state");
         const loadingState = document.getElementById("loading-state");
         const errorState = document.getElementById("error-state");
         const retryButton = document.getElementById("retry-button");
 
+        const promptInput = document.getElementById("code-prompt");
+        const contextFile1 = document.getElementById("context-file-1");
+        const contextFile2 = document.getElementById("context-file-2");
+        const runButton = document.getElementById("run-button");
+        const cancelButton = document.getElementById("cancel-button");
+        const applyButton = document.getElementById("apply-button");
+
+        let currentMode = "explain";
+        let latestCodeState = {
+            canRun: false,
+            canCancel: false,
+            canApply: false,
+        };
+
         retryButton.addEventListener("click", () => {
             vscode.postMessage({ type: "refresh" });
+        });
+
+        modeExplainButton.addEventListener("click", () => {
+            vscode.postMessage({ type: "setMode", mode: "explain" });
+        });
+
+        modeCodeButton.addEventListener("click", () => {
+            vscode.postMessage({ type: "setMode", mode: "code" });
+        });
+
+        runButton.addEventListener("click", () => {
+            vscode.postMessage({
+                type: "runTask",
+                prompt: promptInput.value,
+                contextFiles: [contextFile1.value, contextFile2.value],
+            });
+        });
+
+        cancelButton.addEventListener("click", () => {
+            vscode.postMessage({ type: "cancelTask" });
+        });
+
+        applyButton.addEventListener("click", () => {
+            vscode.postMessage({ type: "applyTask" });
         });
 
         window.addEventListener("message", (event) => {
             const message = event.data;
             switch (message.type) {
+                case "mode:update":
+                    renderMode(message.mode);
+                    break;
+                case "code:update":
+                    renderCode(message.data);
+                    break;
                 case "state:empty":
                     showEmpty(message.message);
                     break;
@@ -227,6 +383,27 @@
         document.addEventListener("DOMContentLoaded", () => {
             vscode.postMessage({ type: "ready" });
         });
+
+        function renderMode(mode) {
+            currentMode = mode;
+            const explainActive = mode === "explain";
+            modeExplainButton.classList.toggle("active", explainActive);
+            modeCodeButton.classList.toggle("active", !explainActive);
+            explainPanel.classList.toggle("hidden", !explainActive);
+            codePanel.classList.toggle("hidden", explainActive);
+        }
+
+        function renderCode(data) {
+            latestCodeState = data;
+            document.getElementById("code-file-path").textContent = data.filePath || "No file selected.";
+            document.getElementById("code-status").textContent = data.message || "";
+            document.getElementById("code-transcript").textContent = data.transcriptText || "";
+            document.getElementById("code-model-output").textContent = data.modelOutputText || "";
+            document.getElementById("code-draft").textContent = data.draftText || "";
+            runButton.disabled = !data.canRun;
+            cancelButton.disabled = !data.canCancel;
+            applyButton.disabled = !data.canApply;
+        }
 
         function hideAllStates() {
             content.classList.add("hidden");
@@ -260,155 +437,84 @@
 
             document.getElementById("entity-name").textContent = data.entityName;
             document.getElementById("entity-type").textContent = data.entityType;
-            document.getElementById("entity-location").textContent = formatLocation(data.filePath, data.lineStart, data.lineEnd);
+            document.getElementById("entity-location").textContent =
+                data.lineStart && data.lineEnd
+                    ? `${data.filePath}:${data.lineStart}-${data.lineEnd}`
+                    : data.filePath;
 
             const signature = document.getElementById("entity-signature");
-            toggleText(signature, data.signature);
+            signature.textContent = data.signature || "";
+            signature.classList.toggle("hidden", !data.signature);
 
-            const eventCount = document.getElementById("event-count");
-            eventCount.textContent = `${data.eventCount} events recorded`;
+            document.getElementById("event-count").textContent = `${data.eventCount} linked event(s)`;
+            document.getElementById("summary-text").textContent = data.summary || "";
+            document.getElementById("summary-text").classList.toggle("hidden", !data.summary);
+            document.getElementById("detail-text").textContent = data.detailedExplanation || "";
+            document.getElementById("detail-text").classList.toggle("hidden", !data.detailedExplanation);
 
-            const summary = document.getElementById("summary-text");
-            const detail = document.getElementById("detail-text");
-            const hasDistinctDetail =
-                data.detailedExplanation &&
-                data.detailedExplanation.trim().length > 0 &&
-                data.detailedExplanation.trim() !== data.summary.trim();
+            const historyFallback = document.getElementById("history-fallback");
+            historyFallback.classList.toggle("hidden", data.historyAvailable);
+            const timelineList = document.getElementById("timeline-list");
+            timelineList.replaceChildren();
+            data.timeline.forEach((item) => {
+                const li = document.createElement("li");
+                li.className = "timeline-item";
+                li.innerHTML = `
+                    <div class="row">
+                        <span class="badge">${escapeHtml(item.actionType)}</span>
+                        <span class="muted">${escapeHtml(item.timestamp)}</span>
+                    </div>
+                    <p>${escapeHtml(item.intent)}</p>
+                    ${item.reasoning ? `<p class="muted">${escapeHtml(item.reasoning)}</p>` : ""}
+                    ${item.renameLabel ? `<p class="muted">${escapeHtml(item.renameLabel)}</p>` : ""}
+                `;
+                timelineList.appendChild(li);
+            });
 
-            toggleText(summary, data.summary);
-            toggleText(detail, hasDistinctDetail ? data.detailedExplanation : null);
-
-            renderTimeline(data.timeline, data.historyAvailable);
-            renderRelatedEntities(data.relatedEntities);
-        }
-
-        function renderTimeline(timeline, historyAvailable) {
-            const list = document.getElementById("timeline-list");
-            const fallback = document.getElementById("history-fallback");
-            list.replaceChildren();
-
-            if (!historyAvailable) {
-                fallback.classList.remove("hidden");
-                return;
-            }
-
-            fallback.classList.add("hidden");
-
-            if (!timeline.length) {
-                const item = document.createElement("li");
-                item.className = "timeline-item muted";
-                item.textContent = "No recorded events.";
-                list.appendChild(item);
-                return;
-            }
-
-            for (const entry of timeline) {
-                const item = document.createElement("li");
-                item.className = "timeline-item";
-
-                const topRow = document.createElement("div");
-                topRow.className = "row";
-
-                const badge = document.createElement("span");
-                badge.className = "badge";
-                badge.textContent = entry.actionType;
-
-                const timestamp = document.createElement("span");
-                timestamp.className = "muted";
-                timestamp.textContent = formatTimestamp(entry.timestamp);
-
-                topRow.appendChild(badge);
-                topRow.appendChild(timestamp);
-
-                const intent = document.createElement("p");
-                intent.textContent = entry.intent;
-
-                item.appendChild(topRow);
-                item.appendChild(intent);
-
-                if (entry.renameLabel) {
-                    const rename = document.createElement("p");
-                    rename.className = "muted";
-                    rename.textContent = entry.renameLabel;
-                    item.appendChild(rename);
-                }
-
-                list.appendChild(item);
-            }
-        }
-
-        function renderRelatedEntities(relatedEntities) {
-            const list = document.getElementById("related-list");
-            const empty = document.getElementById("related-empty");
-            list.replaceChildren();
-
-            if (!relatedEntities.length) {
-                empty.classList.remove("hidden");
-                return;
-            }
-
-            empty.classList.add("hidden");
-            for (const related of relatedEntities) {
-                const item = document.createElement("li");
-                item.className = "related-item";
-
+            const relatedEmpty = document.getElementById("related-empty");
+            relatedEmpty.classList.toggle("hidden", data.relatedEntities.length > 0);
+            const relatedList = document.getElementById("related-list");
+            relatedList.replaceChildren();
+            data.relatedEntities.forEach((item) => {
+                const li = document.createElement("li");
+                li.className = "related-item";
                 const button = document.createElement("button");
                 button.type = "button";
                 button.className = "link-button";
-                button.textContent = related.label;
+                button.textContent = item.label;
                 button.addEventListener("click", () => {
-                    vscode.postMessage({
-                        type: "openRelatedEntity",
-                        entityId: related.entityId,
-                    });
+                    vscode.postMessage({ type: "openRelatedEntity", entityId: item.entityId });
                 });
+                li.appendChild(button);
 
                 const meta = document.createElement("p");
                 meta.className = "muted";
-                meta.textContent = related.relationLabel || related.qualifiedName;
-
-                item.appendChild(button);
-                item.appendChild(meta);
-                list.appendChild(item);
-            }
-        }
-
-        function toggleText(element, value) {
-            if (value && value.trim().length > 0) {
-                element.textContent = value;
-                element.classList.remove("hidden");
-                return;
-            }
-            element.textContent = "";
-            element.classList.add("hidden");
-        }
-
-        function formatLocation(filePath, lineStart, lineEnd) {
-            if (lineStart === null || lineEnd === null) {
-                return filePath;
-            }
-            if (lineStart === lineEnd) {
-                return `${filePath}:${lineStart}`;
-            }
-            return `${filePath}:${lineStart}-${lineEnd}`;
-        }
-
-        function formatTimestamp(value) {
-            const parsed = new Date(value);
-            return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
+                meta.textContent = `${item.relationLabel} • ${item.qualifiedName}`;
+                li.appendChild(meta);
+                relatedList.appendChild(li);
+            });
         }
 
         function formatError(error, baseUrl) {
             switch (error) {
-                case "backend_unavailable":
-                    return `Cannot connect to TailEvents backend. Make sure the server is running at ${baseUrl}.`;
                 case "entity_not_found":
-                    return "No indexed entity found at this location.";
+                    return "The selected entity was not found in the TailEvents index.";
+                case "backend_unavailable":
+                    return `TailEvents backend is unavailable. Check ${baseUrl || "the configured base URL"}.`;
                 case "timeout":
-                    return "Request timed out. The backend may be busy generating an explanation.";
+                    return "The request timed out before TailEvents responded.";
                 default:
-                    return "Something went wrong.";
+                    return "TailEvents returned an unexpected error.";
             }
+        }
+
+        function escapeHtml(value) {
+            return String(value)
+                .replaceAll("&", "&amp;")
+                .replaceAll("<", "&lt;")
+                .replaceAll(">", "&gt;")
+                .replaceAll('"', "&quot;")
+                .replaceAll("'", "&#39;");
         }
     </script>
 </body>

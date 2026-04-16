@@ -7,8 +7,8 @@
       "request": "launch",
       "runtimeExecutable": "${execPath}",
       "args": [
-        "--extensionDevelopmentPath=${workspaceFolder}/vscode-extension",
-        "${workspaceFolder}"
+        "${workspaceFolder}/.vscode/extension-host.code-workspace",
+        "--extensionDevelopmentPath=${workspaceFolder}/vscode-extension"
       ],
       "outFiles": [
         "${workspaceFolder}/vscode-extension/out/**/*.js"

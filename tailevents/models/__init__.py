@@ -17,6 +17,7 @@ from tailevents.models.explanation import (
 )
 from tailevents.models.protocols import (
     CacheProtocol,
+    CodingTaskServiceProtocol,
     DocRetrieverProtocol,
     EntityDBProtocol,
     EventStoreProtocol,
@@ -26,12 +27,28 @@ from tailevents.models.protocols import (
     IndexerResult,
     LLMClientProtocol,
     RelationStoreProtocol,
+    TaskStepStoreProtocol,
 )
 from tailevents.models.relation import Relation
+from tailevents.models.task import (
+    CodingTaskCreateRequest,
+    CodingTaskCreateResponse,
+    CodingTaskDraftResult,
+    CodingTaskEdit,
+    CodingTaskToolResultRequest,
+    TaskStepEvent,
+    ToolCallPayload,
+)
 
 __all__ = [
     "ActionType",
     "CacheProtocol",
+    "CodingTaskCreateRequest",
+    "CodingTaskCreateResponse",
+    "CodingTaskDraftResult",
+    "CodingTaskEdit",
+    "CodingTaskServiceProtocol",
+    "CodingTaskToolResultRequest",
     "CodeEntity",
     "DocRetrieverProtocol",
     "EntityDBProtocol",
@@ -56,6 +73,9 @@ __all__ = [
     "RelationStoreProtocol",
     "RelationType",
     "RenameRecord",
+    "TaskStepEvent",
+    "TaskStepStoreProtocol",
     "TailEvent",
+    "ToolCallPayload",
     "UsagePattern",
 ]
