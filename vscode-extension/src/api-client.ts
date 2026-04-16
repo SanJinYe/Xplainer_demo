@@ -1,6 +1,8 @@
 import {
     type ApiErrorCategory,
     type ApiResult,
+    type BaselineOnboardFilePayload,
+    type BaselineOnboardFileResult,
     type BackendCodeEntity,
     type BackendEntityExplanation,
     type BackendTailEvent,
@@ -59,6 +61,10 @@ export interface TailEventsApi {
         payload: CreateRawEventPayload,
         signal?: AbortSignal,
     ): Promise<ApiResult<BackendTailEvent>>;
+    onboardBaselineFile(
+        payload: BaselineOnboardFilePayload,
+        signal?: AbortSignal,
+    ): Promise<ApiResult<BaselineOnboardFileResult>>;
     createCodingTask(
         payload: CodingTaskCreateRequestPayload,
         signal?: AbortSignal,
@@ -176,6 +182,21 @@ export class TailEventsApiClient implements TailEventsApi {
     ): Promise<ApiResult<BackendTailEvent>> {
         return this.requestJson<BackendTailEvent>(
             "/events",
+            undefined,
+            signal,
+            {
+                method: "POST",
+                body: payload,
+            },
+        );
+    }
+
+    public async onboardBaselineFile(
+        payload: BaselineOnboardFilePayload,
+        signal?: AbortSignal,
+    ): Promise<ApiResult<BaselineOnboardFileResult>> {
+        return this.requestJson<BaselineOnboardFileResult>(
+            "/baseline/onboard-file",
             undefined,
             signal,
             {

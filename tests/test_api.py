@@ -2,6 +2,8 @@ from datetime import datetime
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
+import threading
+import time
 
 import pytest
 import pytest_asyncio
@@ -47,6 +49,30 @@ class FakeLLMClient:
         temperature: float = 0.3,
     ):
         yield STRUCTURED_OUTPUT
+
+
+class SlowFakeLLMClient(FakeLLMClient):
+    def __init__(self, delay_seconds: float):
+        self._delay_seconds = delay_seconds
+
+    async def generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 1000,
+        temperature: float = 0.3,
+    ) -> str:
+        time.sleep(self._delay_seconds)
+        return STRUCTURED_OUTPUT
+
+    async def stream_generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 1000,
+        temperature: float = 0.3,
+    ):
+        yield await self.generate(system_prompt, user_prompt, max_tokens, temperature)
 
 
 class FakeDocRetriever:
@@ -490,6 +516,237 @@ def test_api_error_responses(api_client):
         },
     )
     assert bad_event.status_code == 422
+
+
+def test_baseline_onboard_file_endpoint(api_client):
+    created = api_client.post(
+        "/api/v1/baseline/onboard-file",
+        json={
+            "file_path": "pkg/onboarded.py",
+            "code_snapshot": "def onboarded():\n    return 1\n",
+        },
+    )
+    assert created.status_code == 200
+    created_payload = created.json()
+    assert created_payload["status"] == "created"
+    assert created_payload["file_path"] == "pkg/onboarded.py"
+    assert created_payload["event_id"]
+
+    entities = api_client.get("/api/v1/entities/search", params={"q": "onboarded"})
+    assert entities.status_code == 200
+    assert any(item["qualified_name"] == "onboarded" for item in entities.json())
+
+    duplicate = api_client.post(
+        "/api/v1/baseline/onboard-file",
+        json={
+            "file_path": "pkg/onboarded.py",
+            "code_snapshot": "def onboarded():\n    return 1\n",
+        },
+    )
+    assert duplicate.status_code == 200
+    assert duplicate.json() == {
+        "status": "skipped",
+        "file_path": "pkg/onboarded.py",
+        "event_id": None,
+        "reason": "duplicate_baseline",
+    }
+
+
+def test_baseline_onboard_file_allows_new_baseline_content(api_client):
+    first = api_client.post(
+        "/api/v1/baseline/onboard-file",
+        json={
+            "file_path": "pkg/history.py",
+            "code_snapshot": "def history():\n    return 1\n",
+        },
+    )
+    assert first.status_code == 200
+    assert first.json()["status"] == "created"
+
+    second = api_client.post(
+        "/api/v1/baseline/onboard-file",
+        json={
+            "file_path": "pkg/history.py",
+            "code_snapshot": "def history():\n    return 2\n",
+        },
+    )
+    assert second.status_code == 200
+    assert second.json()["status"] == "created"
+
+    recent_events = api_client.get("/api/v1/events")
+    assert recent_events.status_code == 200
+    payload = recent_events.json()
+    assert len(payload) == 2
+    assert {item["action_type"] for item in payload} == {"baseline"}
+
+
+def test_baseline_onboard_file_skips_when_real_history_exists(api_client):
+    seed_api_data(api_client)
+
+    skipped = api_client.post(
+        "/api/v1/baseline/onboard-file",
+        json={
+            "file_path": "service.py",
+            "code_snapshot": "def helper():\n    return 1\n",
+        },
+    )
+    assert skipped.status_code == 200
+    assert skipped.json() == {
+        "status": "skipped",
+        "file_path": "service.py",
+        "event_id": None,
+        "reason": "existing_traced_history",
+    }
+
+
+def test_baseline_onboard_file_rejects_large_payload(api_client):
+    too_large = api_client.post(
+        "/api/v1/baseline/onboard-file",
+        json={
+            "file_path": "pkg/huge.py",
+            "code_snapshot": "a" * ((512 * 1024) + 1),
+        },
+    )
+    assert too_large.status_code == 422
+    assert "512 KB" in too_large.json()["detail"]
+
+
+def test_baseline_event_precedes_later_modify_history(api_client):
+    onboarded = api_client.post(
+        "/api/v1/baseline/onboard-file",
+        json={
+            "file_path": "pkg/timeline.py",
+            "code_snapshot": "def timeline():\n    return 1\n",
+        },
+    )
+    assert onboarded.status_code == 200
+    event_id = onboarded.json()["event_id"]
+
+    modified = api_client.post(
+        "/api/v1/events",
+        json={
+            "action_type": "modify",
+            "file_path": "pkg/timeline.py",
+            "code_snapshot": "def timeline():\n    return 2\n",
+            "intent": "update timeline helper",
+        },
+    )
+    assert modified.status_code == 201
+
+    entity = api_client.get("/api/v1/entities/search", params={"q": "timeline"})
+    assert entity.status_code == 200
+    timeline_entity = next(
+        item for item in entity.json() if item["qualified_name"] == "timeline"
+    )
+    entity_events = api_client.get(
+        f"/api/v1/events/for-entity/{timeline_entity['entity_id']}"
+    )
+    assert entity_events.status_code == 200
+    event_ids = [item["event_id"] for item in entity_events.json()]
+    assert event_ids == [event_id, modified.json()["event_id"]]
+
+
+def test_baseline_onboard_docstring_only_init_creates_no_entities(api_client):
+    onboarded = api_client.post(
+        "/api/v1/baseline/onboard-file",
+        json={
+            "file_path": "pkg/__init__.py",
+            "code_snapshot": '"""package docs"""\n',
+        },
+    )
+    assert onboarded.status_code == 200
+    assert onboarded.json()["status"] == "created"
+
+    entities = api_client.get("/api/v1/entities/search", params={"q": "__init__"})
+    assert entities.status_code == 200
+    assert entities.json() == []
+
+
+def test_baseline_onboard_empty_file_creates_no_entities(api_client):
+    onboarded = api_client.post(
+        "/api/v1/baseline/onboard-file",
+        json={
+            "file_path": "pkg/empty.py",
+            "code_snapshot": "",
+        },
+    )
+    assert onboarded.status_code == 200
+    assert onboarded.json()["status"] == "created"
+
+    listed = api_client.get("/api/v1/entities")
+    assert listed.status_code == 200
+    assert all(item["file_path"] != "pkg/empty.py" for item in listed.json())
+
+
+def test_baseline_onboarding_does_not_significantly_block_other_requests():
+    with TemporaryDirectory() as temp_dir:
+        db_path = Path(temp_dir) / "tailevents.db"
+        settings = Settings(db_path=str(db_path))
+        app = create_app(
+            settings=settings,
+            llm_client=SlowFakeLLMClient(delay_seconds=0.01),
+            doc_retriever=FakeDocRetriever(),
+        )
+
+        with TestClient(app) as client:
+            seeded = seed_api_data(client)
+            helper_id = seeded["helper"]["entity_id"]
+
+            def measure_event_latency(suffix: str) -> float:
+                started = time.perf_counter()
+                response = client.post(
+                    "/api/v1/events",
+                    json={
+                        "action_type": "create",
+                        "file_path": f"bench_{suffix}.py",
+                        "code_snapshot": f"def bench_{suffix}():\n    return 1\n",
+                        "intent": f"create bench {suffix}",
+                    },
+                )
+                assert response.status_code == 201
+                return time.perf_counter() - started
+
+            def measure_explain_latency() -> float:
+                cleared = client.post("/api/v1/admin/cache/clear")
+                assert cleared.status_code == 200
+                started = time.perf_counter()
+                response = client.get(f"/api/v1/explain/{helper_id}/summary")
+                assert response.status_code == 200
+                return time.perf_counter() - started
+
+            baseline_event = measure_event_latency("baseline")
+            baseline_explain = measure_explain_latency()
+
+            started_event = threading.Event()
+
+            def run_onboarding() -> None:
+                started_event.set()
+                for index in range(50):
+                    response = client.post(
+                        "/api/v1/baseline/onboard-file",
+                        json={
+                            "file_path": f"pkg/onboard_{index}.py",
+                            "code_snapshot": (
+                                f"def onboard_{index}():\n"
+                                f"    return {index}\n"
+                            ),
+                        },
+                    )
+                    assert response.status_code == 200
+
+            worker = threading.Thread(target=run_onboarding, daemon=True)
+            worker.start()
+            assert started_event.wait(timeout=1.0)
+            time.sleep(0.01)
+
+            concurrent_event = measure_event_latency("concurrent")
+            concurrent_explain = measure_explain_latency()
+
+            worker.join(timeout=5.0)
+            assert not worker.is_alive()
+
+            assert concurrent_event < max(baseline_event * 2, 0.2)
+            assert concurrent_explain < max(baseline_explain * 2, 0.2)
 
 
 def test_coding_task_api_smoke():

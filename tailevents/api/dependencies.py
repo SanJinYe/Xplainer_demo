@@ -6,6 +6,7 @@ from typing import AsyncIterator, Optional
 
 from fastapi import Depends, Request
 
+from tailevents.baseline import BaselineOnboardingService
 from tailevents.cache import ExplanationCache
 from tailevents.coding import CodingTaskService
 from tailevents.config import Settings, get_settings
@@ -43,6 +44,7 @@ class AppContainer:
     task_step_store: SQLiteTaskStepStore
     cache: ExplanationCache
     indexer: Indexer
+    baseline_service: BaselineOnboardingService
     llm_client: LLMClientProtocol
     doc_retriever: DocRetrieverProtocol
     explanation_engine: ExplanationEngine
@@ -197,6 +199,10 @@ def build_lifespan(
             indexer=indexer,
             hooks=[GraphUpdateHook(graph_service)],
         )
+        baseline_service = BaselineOnboardingService(
+            event_store=event_store,
+            ingestion_pipeline=ingestion_pipeline,
+        )
         coding_task_service = CodingTaskService(
             llm_client=active_llm_client,
             step_store=task_step_store,
@@ -211,6 +217,7 @@ def build_lifespan(
             task_step_store=task_step_store,
             cache=cache,
             indexer=indexer,
+            baseline_service=baseline_service,
             llm_client=active_llm_client,
             doc_retriever=active_doc_retriever,
             explanation_engine=explanation_engine,
@@ -278,6 +285,12 @@ def get_cache(
     return container.cache
 
 
+def get_baseline_onboarding_service(
+    container: AppContainer = Depends(get_container),
+) -> BaselineOnboardingService:
+    return container.baseline_service
+
+
 def get_explanation_engine(
     container: AppContainer = Depends(get_container),
 ) -> ExplanationEngine:
@@ -310,6 +323,7 @@ def get_coding_task_service(
 
 __all__ = [
     "AppContainer",
+    "get_baseline_onboarding_service",
     "build_lifespan",
     "get_cache",
     "get_coding_task_service",

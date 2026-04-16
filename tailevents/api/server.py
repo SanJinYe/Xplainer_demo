@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from tailevents.api.dependencies import build_lifespan
 from tailevents.api.routes import (
     admin_router,
+    baseline_router,
     coding_router,
     entities_router,
     events_router,
@@ -52,6 +53,7 @@ def create_app(
     )
 
     app.include_router(events_router, prefix="/api/v1")
+    app.include_router(baseline_router, prefix="/api/v1")
     app.include_router(coding_router, prefix="/api/v1")
     app.include_router(entities_router, prefix="/api/v1")
     app.include_router(explanations_router, prefix="/api/v1")

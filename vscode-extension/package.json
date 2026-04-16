@@ -14,6 +14,7 @@
     "onLanguage:python",
     "onView:tailevents.sidebarView",
     "onCommand:tailEvents.explainCurrentSymbol",
+    "onCommand:tailEvents.onboardRepository",
     "onCommand:tailEvents.openPanel",
     "onCommand:tailEvents.refreshPanel"
   ],
@@ -23,6 +24,10 @@
       {
         "command": "tailEvents.explainCurrentSymbol",
         "title": "TailEvents: Explain Current Symbol"
+      },
+      {
+        "command": "tailEvents.onboardRepository",
+        "title": "TailEvents: Onboard Repository"
       },
       {
         "command": "tailEvents.openPanel",

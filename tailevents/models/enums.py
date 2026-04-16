@@ -4,6 +4,7 @@ from enum import Enum
 
 
 class ActionType(str, Enum):
+    BASELINE = "baseline"
     CREATE = "create"
     MODIFY = "modify"
     DELETE = "delete"

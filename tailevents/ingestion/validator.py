@@ -43,15 +43,6 @@ class RawEventValidator:
                 )
             )
 
-        if not self._as_text(payload.get("code_snapshot")):
-            issues.append(
-                ValidationIssue(
-                    field="code_snapshot",
-                    code="empty",
-                    message="code_snapshot must be a non-empty string",
-                )
-            )
-
         if not self._as_text(payload.get("intent")):
             issues.append(
                 ValidationIssue(

@@ -63,7 +63,6 @@ def test_validator_returns_structured_issues():
     by_field = {issue.field: issue for issue in issues}
     assert "action_type" in by_field
     assert by_field["file_path"].code == "empty"
-    assert by_field["code_snapshot"].code == "empty"
     assert by_field["intent"].code == "empty"
 
     with pytest.raises(IngestionValidationError) as exc_info:
@@ -76,7 +75,7 @@ def test_validator_returns_structured_issues():
             }
         )
 
-    assert len(exc_info.value.issues) >= 4
+    assert len(exc_info.value.issues) >= 3
 
 
 @pytest.mark.asyncio

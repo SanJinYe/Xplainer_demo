@@ -270,6 +270,12 @@ function createApiClient(options: {
             }
             return success(sampleEvent());
         },
+        onboardBaselineFile: async () => success({
+            status: "created",
+            file_path: "pkg/demo.py",
+            event_id: "te_onboard",
+            reason: null,
+        }),
         createCodingTask: async (_payload) => success({ task_id: "task_1", status: "created" }),
         submitCodingToolResult: async (_taskId, _payload) => success(null),
         cancelCodingTask: async (taskId) => {

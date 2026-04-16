@@ -7,11 +7,17 @@ import * as vscode from "vscode";
 import { TailEventsApiClient } from "./api-client";
 import { TailEventsHoverProvider } from "./hover-provider";
 import { findEntityByLocation } from "./location-lookup";
+import {
+    buildOnboardingCandidates,
+    formatOnboardingSummary,
+    onboardWorkspaceFiles,
+} from "./onboarding";
 import { getFileLookupCandidates } from "./path-utils";
 import { TailEventsSidebarProvider } from "./sidebar-provider";
 import type { BackendCodeEntity, ExplainCommandArgs } from "./types";
 
 const COMMAND_EXPLAIN_CURRENT_SYMBOL = "tailEvents.explainCurrentSymbol";
+const COMMAND_ONBOARD_REPOSITORY = "tailEvents.onboardRepository";
 const COMMAND_OPEN_PANEL = "tailEvents.openPanel";
 const COMMAND_REFRESH_PANEL = "tailEvents.refreshPanel";
 const VIEW_CONTAINER_ID = "tailevents-sidebar";
@@ -19,6 +25,8 @@ const VIEW_ID = "tailevents.sidebarView";
 const DEFAULT_BASE_URL = "http://127.0.0.1:8766/api/v1";
 const DEFAULT_TIMEOUT_MS = 5000;
 const NO_INDEXED_ENTITY_MESSAGE = "No indexed entity at cursor position.";
+const NO_WORKSPACE_MESSAGE = "Open a workspace folder before running TailEvents onboarding.";
+const NO_ONBOARDING_FILES_MESSAGE = "No candidate Python files found for TailEvents onboarding.";
 
 export function activate(context: vscode.ExtensionContext): void {
     const outputChannel = vscode.window.createOutputChannel("TailEvents");
@@ -142,6 +150,54 @@ export function activate(context: vscode.ExtensionContext): void {
                 await sidebarProvider.showExplainEntity(entity.entity_id);
             },
         ),
+        vscode.commands.registerCommand(COMMAND_ONBOARD_REPOSITORY, async () => {
+            const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
+            if (workspaceFolders.length === 0) {
+                vscode.window.showInformationMessage(NO_WORKSPACE_MESSAGE);
+                return;
+            }
+
+            const candidates = await collectOnboardingCandidates(workspaceFolders);
+            if (candidates.length === 0) {
+                vscode.window.showInformationMessage(NO_ONBOARDING_FILES_MESSAGE);
+                return;
+            }
+
+            await vscode.window.withProgress(
+                {
+                    location: vscode.ProgressLocation.Notification,
+                    title: "TailEvents: Onboard Repository",
+                    cancellable: true,
+                },
+                async (progress, token) => {
+                    outputChannel.appendLine(
+                        `[TailEvents] Starting repository onboarding for ${candidates.length} file(s).`,
+                    );
+                    const summary = await onboardWorkspaceFiles({
+                        apiClient,
+                        candidates,
+                        readFileBytes: async (absolutePath) => {
+                            const buffer = await readFile(absolutePath);
+                            return new Uint8Array(buffer);
+                        },
+                        isCancellationRequested: () => token.isCancellationRequested,
+                        log: (message) => outputChannel.appendLine(message),
+                        onProgress: (current, total, workspaceFilePath) => {
+                            progress.report({
+                                increment: 100 / Math.max(total, 1),
+                                message: `${current}/${total}: ${workspaceFilePath}`,
+                            });
+                        },
+                    });
+                    const message = formatOnboardingSummary(summary);
+                    if (summary.cancelled) {
+                        vscode.window.showWarningMessage(message);
+                        return;
+                    }
+                    vscode.window.showInformationMessage(message);
+                },
+            );
+        }),
         vscode.commands.registerCommand(COMMAND_OPEN_PANEL, async () => {
             await revealSidebar();
         }),
@@ -220,6 +276,30 @@ export function activate(context: vscode.ExtensionContext): void {
             // Fallback to the container reveal command below.
         }
         await vscode.commands.executeCommand(`workbench.view.extension.${VIEW_CONTAINER_ID}`);
+    }
+
+    async function collectOnboardingCandidates(
+        workspaceFolders: readonly vscode.WorkspaceFolder[],
+    ) {
+        const candidates = [];
+        for (const folder of workspaceFolders) {
+            const matches = await vscode.workspace.findFiles(
+                new vscode.RelativePattern(folder, "**/*.py"),
+            );
+            candidates.push(
+                ...buildOnboardingCandidates(
+                    folder.uri.fsPath,
+                    matches.map((item) => item.fsPath),
+                ),
+            );
+        }
+        return candidates.sort((left, right) => {
+            const byWorkspacePath = left.workspaceFilePath.localeCompare(right.workspaceFilePath);
+            if (byWorkspacePath !== 0) {
+                return byWorkspacePath;
+            }
+            return left.absolutePath.localeCompare(right.absolutePath);
+        });
     }
 }
 

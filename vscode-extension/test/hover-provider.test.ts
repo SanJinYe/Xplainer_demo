@@ -188,6 +188,12 @@ function createApiClient(options: {
         getExplanationFull: async () => success(sampleExplanation()),
         getEntityEvents: async () => success([]),
         createEvent: async (_payload: CreateRawEventPayload) => success(sampleEvent()),
+        onboardBaselineFile: async () => success({
+            status: "created",
+            file_path: "pkg/demo.py",
+            event_id: "te_onboard",
+            reason: null,
+        }),
         createCodingTask: async (_payload: CodingTaskCreateRequestPayload) => success({ task_id: "task_1", status: "created" }),
         submitCodingToolResult: async (_taskId: string, _payload: CodingTaskToolResultPayload) => success(null),
         cancelCodingTask: async () => success(null),

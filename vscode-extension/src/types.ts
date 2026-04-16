@@ -93,6 +93,18 @@ export interface BackendTailEvent {
     external_refs: BackendExternalRef[];
 }
 
+export interface BaselineOnboardFilePayload {
+    file_path: string;
+    code_snapshot: string;
+}
+
+export interface BaselineOnboardFileResult {
+    status: "created" | "skipped";
+    file_path: string;
+    event_id?: string | null;
+    reason?: "duplicate_baseline" | "existing_traced_history" | null;
+}
+
 export interface CreateRawEventPayload {
     action_type: "modify";
     file_path: string;

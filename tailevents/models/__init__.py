@@ -1,5 +1,9 @@
 """Public model exports."""
 
+from tailevents.models.baseline import (
+    BaselineOnboardFileRequest,
+    BaselineOnboardFileResponse,
+)
 from tailevents.models.entity import CodeEntity, EventRef, ParamInfo, RenameRecord
 from tailevents.models.enums import (
     ActionType,
@@ -42,6 +46,8 @@ from tailevents.models.task import (
 
 __all__ = [
     "ActionType",
+    "BaselineOnboardFileRequest",
+    "BaselineOnboardFileResponse",
     "CacheProtocol",
     "CodingTaskCreateRequest",
     "CodingTaskCreateResponse",

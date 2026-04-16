@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 
 import { TailEventsApiClient } from "../src/api-client";
 import type {
+    BaselineOnboardFileResult,
     BackendCodeEntity,
     BackendEntityExplanation,
     BackendTaskStepEvent,
@@ -70,6 +71,37 @@ describe("TailEventsApiClient", () => {
         assert.equal(second.ok, false);
         assert.equal(fetchCount, 2);
         assert.equal(first.ok ? "" : first.error, "entity_not_found");
+    });
+
+    it("posts baseline onboarding requests to the dedicated route", async () => {
+        let requestUrl = "";
+        let requestBody: unknown;
+
+        const client = createClient(async (url, init) => {
+            requestUrl = String(url);
+            requestBody = parseJsonBody(init?.body);
+            return jsonResponse({
+                status: "created",
+                file_path: "pkg/demo.py",
+                event_id: "te_baseline",
+                reason: null,
+            } satisfies BaselineOnboardFileResult);
+        });
+
+        const result = await client.onboardBaselineFile({
+            file_path: "pkg/demo.py",
+            code_snapshot: "print(1)\n",
+        });
+
+        assert.equal(result.ok, true);
+        assert.equal(
+            requestUrl,
+            "http://127.0.0.1:8766/api/v1/baseline/onboard-file",
+        );
+        assert.deepEqual(requestBody, {
+            file_path: "pkg/demo.py",
+            code_snapshot: "print(1)\n",
+        });
     });
 
     it("classifies connection failures as backend unavailable", async () => {
