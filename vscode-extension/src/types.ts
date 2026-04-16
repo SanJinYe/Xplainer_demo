@@ -111,8 +111,14 @@ export interface CodingTaskRequestPayload {
     user_prompt: string;
 }
 
+export interface CodingTaskEdit {
+    old_text: string;
+    new_text: string;
+}
+
 export interface CodingTaskResult {
     updated_file_content: string;
+    edits: CodingTaskEdit[];
     intent: string;
     reasoning?: string | null;
     action_type: "create" | "modify";
@@ -159,6 +165,7 @@ export interface ApiFailure {
     ok: false;
     error: ApiErrorCategory;
     status: number | null;
+    message?: string;
 }
 
 export type ApiResult<T> = ApiSuccess<T> | ApiFailure;

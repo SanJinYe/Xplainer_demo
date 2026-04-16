@@ -182,7 +182,7 @@ describe("TailEventsApiClient", () => {
             return sseResponse([
                 'event: delta\ndata: {"text":"hello "}\n\n',
                 'event: delta\ndata: {"text":"world"}\n\n',
-                'event: result\ndata: {"updated_file_content":"print(1)\\n","intent":"change output","reasoning":null,"action_type":"modify"}\n\n',
+                'event: result\ndata: {"updated_file_content":"print(1)\\n","edits":[{"old_text":"print(0)\\n","new_text":"print(1)\\n"}],"intent":"change output","reasoning":null,"action_type":"modify"}\n\n',
                 'event: done\ndata: {}\n\n',
             ]);
         });
@@ -205,6 +205,36 @@ describe("TailEventsApiClient", () => {
         assert.equal(streamed, "hello world");
         assert.equal(result.ok, true);
         assert.equal(result.ok ? result.data.action_type : "", "modify");
+        assert.deepEqual(
+            result.ok ? result.data.edits : [],
+            [{ old_text: "print(0)\n", new_text: "print(1)\n" }],
+        );
+    });
+
+    it("preserves task stream error messages from SSE error events", async () => {
+        const client = createClient(async () => {
+            return sseResponse([
+                'event: delta\ndata: {"text":"broken output"}\n\n',
+                'event: error\ndata: {"message":"updated_file_content is not valid Python: line 1: invalid syntax"}\n\n',
+                'event: done\ndata: {}\n\n',
+            ]);
+        });
+
+        const result = await client.runCodingTaskStream(
+            {
+                file_path: "pkg/demo.py",
+                file_content: "print(0)\n",
+                user_prompt: "change output to 1",
+            },
+            {},
+        );
+
+        assert.equal(result.ok, false);
+        assert.equal(result.ok ? "" : result.error, "unknown");
+        assert.equal(
+            result.ok ? "" : result.message,
+            "updated_file_content is not valid Python: line 1: invalid syntax",
+        );
     });
 });
 

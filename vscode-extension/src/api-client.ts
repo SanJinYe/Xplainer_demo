@@ -190,7 +190,7 @@ export class TailEventsApiClient implements TailEventsApi {
 
             const parsed = await consumeSseStream(response.body, handlers);
             if (!parsed.ok) {
-                return failure(parsed.error, response.status);
+                return failure(parsed.error, response.status, parsed.message);
             }
             return success(parsed.result, response.status);
         } catch (error) {
@@ -336,7 +336,7 @@ async function consumeSseStream(
     handlers: CodingTaskStreamHandlers,
 ): Promise<
     | { ok: true; result: CodingTaskResult }
-    | { ok: false; error: ApiErrorCategory }
+    | { ok: false; error: ApiErrorCategory; message?: string }
 > {
     const reader = stream.getReader();
     const decoder = new TextDecoder();
@@ -365,7 +365,11 @@ async function consumeSseStream(
                 continue;
             }
             if (parsed.event === "error") {
-                return { ok: false, error: "unknown" };
+                return {
+                    ok: false,
+                    error: "unknown",
+                    message: extractErrorMessage(parsed.data),
+                };
             }
             if (parsed.event === "done") {
                 return result
@@ -404,15 +408,35 @@ function parseSseBlock(block: string): { event: string; data: any } | null {
     }
 }
 
+function extractErrorMessage(value: any): string | undefined {
+    if (!value || typeof value.message !== "string") {
+        return undefined;
+    }
+    const message = value.message.trim();
+    return message.length > 0 ? message : undefined;
+}
+
 function isCodingTaskResult(value: any): value is CodingTaskResult {
     return Boolean(
         value &&
         typeof value.updated_file_content === "string" &&
         value.updated_file_content.length > 0 &&
+        Array.isArray(value.edits) &&
+        value.edits.length > 0 &&
+        value.edits.every(isCodingTaskEdit) &&
         typeof value.intent === "string" &&
         value.intent.trim().length > 0 &&
         (value.reasoning === null || value.reasoning === undefined || typeof value.reasoning === "string") &&
         (value.action_type === "create" || value.action_type === "modify"),
+    );
+}
+
+function isCodingTaskEdit(value: any): boolean {
+    return Boolean(
+        value &&
+        typeof value.old_text === "string" &&
+        value.old_text.length > 0 &&
+        typeof value.new_text === "string",
     );
 }
 
@@ -465,10 +489,15 @@ function success<T>(data: T, status: number): ApiResult<T> {
     };
 }
 
-function failure<T>(error: ApiErrorCategory, status: number | null): ApiResult<T> {
+function failure<T>(
+    error: ApiErrorCategory,
+    status: number | null,
+    message?: string,
+): ApiResult<T> {
     return {
         ok: false,
         error,
         status,
+        ...(message ? { message } : {}),
     };
 }

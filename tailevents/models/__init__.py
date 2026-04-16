@@ -15,7 +15,7 @@ from tailevents.models.explanation import (
     ExplanationRequest,
     ExplanationResponse,
 )
-from tailevents.models.task import CodingTaskRequest, CodingTaskResult
+from tailevents.models.task import CodingTaskEdit, CodingTaskRequest, CodingTaskResult
 from tailevents.models.protocols import (
     CacheProtocol,
     DocRetrieverProtocol,
@@ -59,6 +59,7 @@ __all__ = [
     "RenameRecord",
     "CodingTaskRequest",
     "CodingTaskResult",
+    "CodingTaskEdit",
     "TailEvent",
     "UsagePattern",
 ]

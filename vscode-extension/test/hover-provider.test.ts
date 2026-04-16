@@ -197,6 +197,7 @@ function createApiClient(options: {
         runCodingTaskStream: async (_payload, _handlers) => {
             return success({
                 updated_file_content: "print(1)\n",
+                edits: [{ old_text: "print(0)\n", new_text: "print(1)\n" }],
                 intent: "noop",
                 reasoning: null,
                 action_type: "modify",

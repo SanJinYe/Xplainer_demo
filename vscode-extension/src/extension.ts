@@ -51,6 +51,22 @@ export function activate(context: vscode.ExtensionContext): void {
         runtime: {
             getActiveEditor: () => vscode.window.activeTextEditor ?? null,
             getWorkspaceFolders: () => vscode.workspace.workspaceFolders,
+            resolveWorkspaceRelativePath: (absolutePath) => {
+                const uri = vscode.Uri.file(absolutePath);
+                const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
+                if (!workspaceFolder) {
+                    return null;
+                }
+                const relativePath = path.relative(workspaceFolder.uri.fsPath, absolutePath);
+                if (
+                    !relativePath ||
+                    relativePath.startsWith("..") ||
+                    path.isAbsolute(relativePath)
+                ) {
+                    return null;
+                }
+                return relativePath.replace(/\\/g, "/");
+            },
             replaceDocumentContent: async (editor, content) => {
                 const lastLineIndex = Math.max(editor.document.lineCount - 1, 0);
                 const lastLine = editor.document.lineAt(lastLineIndex);
@@ -68,6 +84,39 @@ export function activate(context: vscode.ExtensionContext): void {
         },
     });
 
+    function logWorkspaceDiagnostics(label: string): void {
+        const editor = vscode.window.activeTextEditor;
+        const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
+        const workspaceFolder = editor
+            ? vscode.workspace.getWorkspaceFolder(editor.document.uri)
+            : null;
+
+        outputChannel.appendLine(`[diag:${label}] ----------------`);
+        outputChannel.appendLine(
+            `[diag:${label}] workspaceFolders=${JSON.stringify(
+                workspaceFolders.map((folder) => ({
+                    name: folder.name,
+                    fsPath: folder.uri.fsPath,
+                })),
+            )}`,
+        );
+
+        if (!editor) {
+            outputChannel.appendLine(`[diag:${label}] activeEditor=null`);
+            return;
+        }
+
+        outputChannel.appendLine(`[diag:${label}] activeFile=${editor.document.uri.fsPath}`);
+        outputChannel.appendLine(
+            `[diag:${label}] scheme=${editor.document.uri.scheme}, languageId=${editor.document.languageId}, isUntitled=${editor.document.isUntitled}`,
+        );
+        outputChannel.appendLine(
+            `[diag:${label}] getWorkspaceFolder=${workspaceFolder?.uri.fsPath ?? "null"}`,
+        );
+    }
+
+    logWorkspaceDiagnostics("activate");
+
     context.subscriptions.push(
         vscode.languages.registerHoverProvider(
             {
@@ -84,6 +133,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
     context.subscriptions.push(
         vscode.window.onDidChangeActiveTextEditor(() => {
+            logWorkspaceDiagnostics("active-editor-changed");
             void sidebarProvider.refreshCodeContext();
         }),
     );
@@ -94,7 +144,7 @@ export function activate(context: vscode.ExtensionContext): void {
             async (args?: ExplainCommandArgs) => {
                 if (args?.entityId) {
                     await revealSidebar();
-                    await sidebarProvider.loadEntity(args.entityId);
+                    await sidebarProvider.showExplainEntity(args.entityId);
                     return;
                 }
 
@@ -104,7 +154,7 @@ export function activate(context: vscode.ExtensionContext): void {
                 }
 
                 await revealSidebar();
-                await sidebarProvider.loadEntity(entity.entity_id);
+                await sidebarProvider.showExplainEntity(entity.entity_id);
             },
         ),
         vscode.commands.registerCommand(COMMAND_OPEN_PANEL, async () => {

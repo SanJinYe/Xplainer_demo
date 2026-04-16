@@ -47,6 +47,7 @@ const APPLY_FAILED_MESSAGE = "Failed to apply the generated content. Please run 
 interface SidebarRuntime {
     getActiveEditor: () => vscode.TextEditor | null;
     getWorkspaceFolders: () => readonly vscode.WorkspaceFolder[] | undefined;
+    resolveWorkspaceRelativePath?: (absolutePath: string) => string | null;
     replaceDocumentContent: (
         editor: vscode.TextEditor,
         content: string,
@@ -135,6 +136,11 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         return this.currentEntityId;
     }
 
+    public async showExplainEntity(entityId: string): Promise<void> {
+        await this.setMode("explain");
+        await this.loadEntity(entityId);
+    }
+
     public resolveWebviewView(webviewView: vscode.WebviewView): void {
         this.view = webviewView;
         webviewView.webview.options = {
@@ -191,6 +197,15 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         await this.postCodeState();
     }
 
+    public async setMode(mode: SidebarMode): Promise<void> {
+        this.currentMode = mode;
+        await this.postMessage({
+            type: "mode:update",
+            mode: this.currentMode,
+        });
+        await this.postCodeState();
+    }
+
     private cancelPendingExplain(): AbortSignal {
         if (this.currentAbortController) {
             this.currentAbortController.abort();
@@ -221,12 +236,7 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
                 }
                 return;
             case "setMode":
-                this.currentMode = message.mode;
-                await this.postMessage({
-                    type: "mode:update",
-                    mode: this.currentMode,
-                });
-                await this.postCodeState();
+                await this.setMode(message.mode);
                 return;
             case "openRelatedEntity":
                 if (message.entityId) {
@@ -308,7 +318,7 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
 
         if (!result.ok) {
             this.currentTaskContext = null;
-            await this.setCodeState("error", formatTaskError(result.error), this.codeStreamedText);
+            await this.setCodeState("error", formatTaskError(result), this.codeStreamedText);
             return;
         }
 
@@ -489,10 +499,7 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
             };
         }
 
-        const workspaceFilePath = toWorkspaceRelativePath(
-            document.uri.fsPath,
-            this.runtime.getWorkspaceFolders(),
-        );
+        const workspaceFilePath = this.resolveWorkspaceRelativePath(document.uri.fsPath);
         if (!workspaceFilePath) {
             return {
                 context: null,
@@ -553,6 +560,13 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
             type: "code:update",
             data: this.buildCodeViewModel(),
         });
+    }
+
+    private resolveWorkspaceRelativePath(absolutePath: string): string | null {
+        if (this.runtime.resolveWorkspaceRelativePath) {
+            return this.runtime.resolveWorkspaceRelativePath(absolutePath);
+        }
+        return toWorkspaceRelativePath(absolutePath, this.runtime.getWorkspaceFolders());
     }
 
     private async postMessage(message: SidebarMessageToWebview): Promise<void> {
@@ -665,6 +679,9 @@ function validateTaskResult(
     if (!result.updated_file_content.trim()) {
         return "Model returned empty file content.";
     }
+    if (!Array.isArray(result.edits) || result.edits.length === 0) {
+        return "Model returned no edits.";
+    }
     if (result.updated_file_content === originalContent) {
         return "Model did not change the file content.";
     }
@@ -717,8 +734,14 @@ function defaultCodeMessage(
     return APPLYING_MESSAGE;
 }
 
-function formatTaskError(error: ApiErrorCategory): string {
-    switch (error) {
+function formatTaskError(result: ApiResult<CodingTaskResult>): string {
+    if (result.ok) {
+        return TASK_READY_MESSAGE;
+    }
+    if (typeof result.message === "string" && result.message.trim().length > 0) {
+        return result.message.trim();
+    }
+    switch (result.error) {
         case "backend_unavailable":
             return "TailEvents backend is unavailable.";
         case "timeout":

@@ -145,12 +145,9 @@ describe("TailEventsSidebarProvider", () => {
                 onRunTask: async (_payload, handlers) => {
                     handlers.onDelta?.('{"updated');
                     handlers.onDelta?.('_file_content":"print(1)\\n"}');
-                    return success({
-                        updated_file_content: "print(1)\n",
-                        intent: "change output to 1",
+                    return success(sampleTaskResult({
                         reasoning: "minimal edit",
-                        action_type: "modify",
-                    });
+                    }));
                 },
             }),
             templatePath,
@@ -167,6 +164,25 @@ describe("TailEventsSidebarProvider", () => {
         assert.equal(lastCodeUpdate.data.status, "ready_to_apply");
         assert.equal(lastCodeUpdate.data.canApply, true);
         assert.ok(lastCodeUpdate.data.streamedText.includes('{"updated'));
+    });
+
+    it("switches back to explain mode before showing an entity explicitly", async () => {
+        const provider = new TailEventsSidebarProvider({
+            apiClient: createApiClient(),
+            templatePath,
+            getBaseUrl: () => "http://127.0.0.1:8766/api/v1",
+            runtime: createRuntime(),
+        });
+        const view = new FakeWebviewView();
+
+        provider.resolveWebviewView(view.asView() as never);
+        await view.simulateMessage({ type: "setMode", mode: "code" });
+        await provider.showExplainEntity("ent_1");
+
+        const lastModeUpdate = findLastMessage(view.messages, "mode:update");
+        const lastExplainUpdate = findLastMessage(view.messages, "state:update");
+        assert.equal(lastModeUpdate.mode, "explain");
+        assert.equal(lastExplainUpdate.data.entityId, "ent_1");
     });
 
     it("cancels an in-flight coding task", async () => {
@@ -208,18 +224,152 @@ describe("TailEventsSidebarProvider", () => {
         assert.equal(lastCodeUpdate.data.message, "Task cancelled.");
     });
 
+    it("disables run and shows the correct message when the active editor is unsupported", async () => {
+        const cases = [
+            {
+                name: "no active editor",
+                runtime: createRuntime({ activeEditor: null }),
+                message: "No active editor.",
+                filePath: null,
+            },
+            {
+                name: "untitled file",
+                runtime: createRuntime({ isUntitled: true }),
+                message: "Only saved Python files are supported.",
+                filePath: null,
+            },
+            {
+                name: "non-file scheme",
+                runtime: createRuntime({ scheme: "untitled" }),
+                message: "Only local files are supported.",
+                filePath: null,
+            },
+            {
+                name: "non-python file",
+                runtime: createRuntime({ languageId: "markdown", fsPath: "C:\\repo\\demo\\README.md" }),
+                message: "Only Python files are supported.",
+                filePath: "C:\\repo\\demo\\README.md",
+            },
+            {
+                name: "outside workspace file",
+                runtime: createRuntime({
+                    fsPath: "C:\\outside\\demo.py",
+                    workspaceFolders: [createWorkspaceFolder("C:\\repo\\demo")],
+                }),
+                message: "The active file must be inside the current workspace.",
+                filePath: "C:\\outside\\demo.py",
+            },
+        ];
+
+        for (const scenario of cases) {
+            const provider = new TailEventsSidebarProvider({
+                apiClient: createApiClient(),
+                templatePath,
+                getBaseUrl: () => "http://127.0.0.1:8766/api/v1",
+                runtime: scenario.runtime,
+            });
+            const view = new FakeWebviewView();
+
+            provider.resolveWebviewView(view.asView() as never);
+            await view.simulateMessage({ type: "ready" });
+
+            const lastCodeUpdate = findLastMessage(view.messages, "code:update");
+            assert.equal(lastCodeUpdate.data.canRun, false, scenario.name);
+            assert.equal(lastCodeUpdate.data.message, scenario.message, scenario.name);
+            assert.equal(lastCodeUpdate.data.filePath, scenario.filePath, scenario.name);
+        }
+    });
+
+    it("rejects task results that do not change the file content", async () => {
+        const runtime = createRuntime();
+        const provider = new TailEventsSidebarProvider({
+            apiClient: createApiClient({
+                onRunTask: async () => {
+                    return success(sampleTaskResult({
+                        updated_file_content: "print(0)\n",
+                        edits: [{ old_text: "print(0)\n", new_text: "print(0)\n" }],
+                        intent: "no-op",
+                    }));
+                },
+            }),
+            templatePath,
+            getBaseUrl: () => "http://127.0.0.1:8766/api/v1",
+            runtime,
+        });
+        const view = new FakeWebviewView();
+
+        provider.resolveWebviewView(view.asView() as never);
+        await view.simulateMessage({ type: "runTask", prompt: "keep the file the same" });
+
+        const lastCodeUpdate = findLastMessage(view.messages, "code:update");
+        assert.equal(lastCodeUpdate.data.status, "error");
+        assert.equal(lastCodeUpdate.data.message, "Model did not change the file content.");
+        assert.equal(lastCodeUpdate.data.canApply, false);
+    });
+
+    it("rejects task results that have an empty intent", async () => {
+        const runtime = createRuntime();
+        const provider = new TailEventsSidebarProvider({
+            apiClient: createApiClient({
+                onRunTask: async () => {
+                    return success(sampleTaskResult({
+                        intent: "   ",
+                    }));
+                },
+            }),
+            templatePath,
+            getBaseUrl: () => "http://127.0.0.1:8766/api/v1",
+            runtime,
+        });
+        const view = new FakeWebviewView();
+
+        provider.resolveWebviewView(view.asView() as never);
+        await view.simulateMessage({ type: "runTask", prompt: "change output to 1" });
+
+        const lastCodeUpdate = findLastMessage(view.messages, "code:update");
+        assert.equal(lastCodeUpdate.data.status, "error");
+        assert.equal(lastCodeUpdate.data.message, "Model returned an empty intent.");
+        assert.equal(lastCodeUpdate.data.canApply, false);
+    });
+
+    it("shows the backend task error message when task generation fails", async () => {
+        const runtime = createRuntime();
+        const provider = new TailEventsSidebarProvider({
+            apiClient: createApiClient({
+                onRunTask: async () => {
+                    return failure(
+                        "unknown",
+                        "updated_file_content is not valid Python: line 1: invalid syntax",
+                    );
+                },
+            }),
+            templatePath,
+            getBaseUrl: () => "http://127.0.0.1:8766/api/v1",
+            runtime,
+        });
+        const view = new FakeWebviewView();
+
+        provider.resolveWebviewView(view.asView() as never);
+        await view.simulateMessage({ type: "runTask", prompt: "change output to 1" });
+
+        const lastCodeUpdate = findLastMessage(view.messages, "code:update");
+        assert.equal(lastCodeUpdate.data.status, "error");
+        assert.equal(
+            lastCodeUpdate.data.message,
+            "updated_file_content is not valid Python: line 1: invalid syntax",
+        );
+        assert.equal(lastCodeUpdate.data.canApply, false);
+    });
+
     it("applies generated content, writes a RawEvent, and refreshes explain", async () => {
         const runtime = createRuntime();
         const createdEvents: CreateRawEventPayload[] = [];
         const provider = new TailEventsSidebarProvider({
             apiClient: createApiClient({
                 onRunTask: async () => {
-                    return success({
-                        updated_file_content: "print(1)\n",
-                        intent: "change output to 1",
+                    return success(sampleTaskResult({
                         reasoning: "minimal edit",
-                        action_type: "modify",
-                    });
+                    }));
                 },
                 onCreateEvent: async (payload) => {
                     createdEvents.push(payload);
@@ -247,17 +397,45 @@ describe("TailEventsSidebarProvider", () => {
         assert.equal(explainUpdate.data.entityId, "ent_1");
     });
 
+    it("writes the file, saves it, then posts the event when apply succeeds", async () => {
+        const operations: string[] = [];
+        const runtime = createRuntime({
+            onReplace() {
+                operations.push("replace");
+            },
+            onSave() {
+                operations.push("save");
+            },
+        });
+        const provider = new TailEventsSidebarProvider({
+            apiClient: createApiClient({
+                onRunTask: async () => {
+                    return success(sampleTaskResult());
+                },
+                onCreateEvent: async () => {
+                    operations.push("event");
+                    return success(sampleEvents()[0]);
+                },
+            }),
+            templatePath,
+            getBaseUrl: () => "http://127.0.0.1:8766/api/v1",
+            runtime,
+        });
+        const view = new FakeWebviewView();
+
+        provider.resolveWebviewView(view.asView() as never);
+        await view.simulateMessage({ type: "runTask", prompt: "change output to 1" });
+        await view.simulateMessage({ type: "applyTask" });
+
+        assert.deepEqual(operations.slice(0, 3), ["replace", "save", "event"]);
+    });
+
     it("rejects apply when the file changed after generation", async () => {
         const runtime = createRuntime();
         const provider = new TailEventsSidebarProvider({
             apiClient: createApiClient({
                 onRunTask: async () => {
-                    return success({
-                        updated_file_content: "print(1)\n",
-                        intent: "change output to 1",
-                        reasoning: null,
-                        action_type: "modify",
-                    });
+                    return success(sampleTaskResult());
                 },
             }),
             templatePath,
@@ -276,18 +454,38 @@ describe("TailEventsSidebarProvider", () => {
         assert.equal(lastCodeUpdate.data.message, "The file changed after generation. Please run again.");
     });
 
+    it("falls back to a success message when apply succeeds but no entity can be resolved", async () => {
+        const runtime = createRuntime();
+        const provider = new TailEventsSidebarProvider({
+            apiClient: createApiClient({
+                entityByLocationResult: failure("entity_not_found"),
+                onRunTask: async () => {
+                    return success(sampleTaskResult());
+                },
+                onCreateEvent: async () => success(sampleEvents()[0]),
+            }),
+            templatePath,
+            getBaseUrl: () => "http://127.0.0.1:8766/api/v1",
+            runtime,
+        });
+        const view = new FakeWebviewView();
+
+        provider.resolveWebviewView(view.asView() as never);
+        await view.simulateMessage({ type: "runTask", prompt: "change output to 1" });
+        await view.simulateMessage({ type: "applyTask" });
+
+        const lastCodeUpdate = findLastMessage(view.messages, "code:update");
+        assert.equal(lastCodeUpdate.data.status, "applied");
+        assert.equal(lastCodeUpdate.data.message, "File updated and event written. Re-run explain if needed.");
+    });
+
     it("keeps retry event write available when event creation fails", async () => {
         const runtime = createRuntime();
         let createEventCalls = 0;
         const provider = new TailEventsSidebarProvider({
             apiClient: createApiClient({
                 onRunTask: async () => {
-                    return success({
-                        updated_file_content: "print(1)\n",
-                        intent: "change output to 1",
-                        reasoning: null,
-                        action_type: "modify",
-                    });
+                    return success(sampleTaskResult());
                 },
                 onCreateEvent: async () => {
                     createEventCalls += 1;
@@ -322,13 +520,14 @@ describe("TailEventsSidebarProvider", () => {
 
 function createApiClient(options: {
     entityResult?: ApiResult<BackendCodeEntity>;
+    entityByLocationResult?: ApiResult<BackendCodeEntity>;
     explanationResult?: ApiResult<BackendEntityExplanation>;
     eventsResult?: ApiResult<BackendTailEvent[]>;
     onRunTask?: TailEventsApi["runCodingTaskStream"];
     onCreateEvent?: TailEventsApi["createEvent"];
 } = {}): TailEventsApi {
     return {
-        getEntityByLocation: async () => success(sampleEntity()),
+        getEntityByLocation: async () => options.entityByLocationResult ?? success(sampleEntity()),
         getEntity: async () => options.entityResult ?? success(sampleEntity()),
         getExplanationSummary: async () => success(sampleExplanation()),
         getExplanationFull: async () => options.explanationResult ?? success(sampleExplanation()),
@@ -344,47 +543,99 @@ function createApiClient(options: {
                 return options.onRunTask(payload, handlers, signal);
             }
             handlers.onDelta?.('{"updated_file_content":"print(1)\\n"}');
-            return success({
-                updated_file_content: "print(1)\n",
-                intent: "change output to 1",
-                reasoning: null,
-                action_type: "modify",
-            });
+            return success(sampleTaskResult());
         },
     };
 }
 
-function createRuntime() {
-    const document = new FakeDocument("C:\\repo\\demo\\pkg\\demo.py", "python", "print(0)\n");
-    const editor = new FakeEditor(document);
+function createRuntime(options: {
+    activeEditor?: FakeEditor | null;
+    fsPath?: string;
+    languageId?: string;
+    text?: string;
+    isUntitled?: boolean;
+    scheme?: string;
+    workspaceFolders?: readonly any[];
+    onReplace?: () => void;
+    onSave?: () => void;
+    saveResult?: boolean;
+} = {}) {
+    const document = new FakeDocument({
+        fsPath: options.fsPath ?? "C:\\repo\\demo\\pkg\\demo.py",
+        languageId: options.languageId ?? "python",
+        text: options.text ?? "print(0)\n",
+        isUntitled: options.isUntitled ?? false,
+        scheme: options.scheme ?? "file",
+    });
+    const defaultEditor = new FakeEditor(document);
+    const activeEditor = options.activeEditor === undefined
+        ? new FakeEditor(document)
+        : options.activeEditor;
     return {
-        editor,
-        getActiveEditor: () => editor as unknown as any,
-        getWorkspaceFolders: () => [{ uri: { fsPath: "C:\\repo\\demo" } } as any],
+        editor: activeEditor ?? defaultEditor,
+        getActiveEditor: () => activeEditor as unknown as any,
+        getWorkspaceFolders: () => options.workspaceFolders ?? [createWorkspaceFolder("C:\\repo\\demo")],
+        resolveWorkspaceRelativePath: (absolutePath: string) => {
+            const workspaceFolders = options.workspaceFolders ?? [createWorkspaceFolder("C:\\repo\\demo")];
+            for (const folder of workspaceFolders) {
+                const relativePath = path.relative(folder.uri.fsPath, absolutePath);
+                if (
+                    relativePath &&
+                    !relativePath.startsWith("..") &&
+                    !path.isAbsolute(relativePath)
+                ) {
+                    return relativePath.replace(/\\/g, "/");
+                }
+            }
+            return null;
+        },
         replaceDocumentContent: async (_editor: unknown, content: string) => {
+            options.onReplace?.();
             document.text = content;
             document.version += 1;
             return true;
         },
-        saveDocument: async () => true,
+        saveDocument: async () => {
+            options.onSave?.();
+            return options.saveResult ?? true;
+        },
     };
+}
+
+function createWorkspaceFolder(fsPath: string) {
+    return {
+        name: "demo",
+        index: 0,
+        uri: {
+            fsPath,
+        },
+    } as any;
 }
 
 class FakeDocument {
     public version = 1;
 
-    public readonly isUntitled = false;
+    public readonly isUntitled: boolean;
 
     public readonly uri: { fsPath: string; scheme: string };
 
-    public constructor(
-        fsPath: string,
-        public readonly languageId: string,
-        public text: string,
-    ) {
+    public readonly languageId: string;
+
+    public text: string;
+
+    public constructor(options: {
+        fsPath: string;
+        languageId: string;
+        text: string;
+        isUntitled: boolean;
+        scheme: string;
+    }) {
+        this.languageId = options.languageId;
+        this.text = options.text;
+        this.isUntitled = options.isUntitled;
         this.uri = {
-            fsPath,
-            scheme: "file",
+            fsPath: options.fsPath,
+            scheme: options.scheme,
         };
     }
 
@@ -606,6 +857,17 @@ async function flushAsyncWork(): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+function sampleTaskResult(overrides: Partial<CodingTaskResult> = {}): CodingTaskResult {
+    return {
+        updated_file_content: "print(1)\n",
+        edits: [{ old_text: "print(0)\n", new_text: "print(1)\n" }],
+        intent: "change output to 1",
+        reasoning: null,
+        action_type: "modify",
+        ...overrides,
+    };
+}
+
 function success<T>(data: T): ApiResult<T> {
     return {
         ok: true,
@@ -614,10 +876,14 @@ function success<T>(data: T): ApiResult<T> {
     };
 }
 
-function failure<T>(error: "backend_unavailable" | "entity_not_found" | "timeout" | "unknown"): ApiResult<T> {
+function failure<T>(
+    error: "backend_unavailable" | "entity_not_found" | "timeout" | "unknown",
+    message?: string,
+): ApiResult<T> {
     return {
         ok: false,
         error,
         status: null,
+        ...(message ? { message } : {}),
     };
 }

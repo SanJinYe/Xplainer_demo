@@ -492,7 +492,7 @@ def test_tasks_stream_endpoint_success_and_failure():
             settings=Settings(db_path=str(db_path)),
             llm_client=FakeStreamingLLMClient(
                 [
-                    '{"updated_file_content":"print(1)\\n",',
+                    '{"edits":[{"old_text":"print(0)\\n","new_text":"print(1)\\n"}],',
                     '"intent":"add print","reasoning":null,"action_type":"modify"}',
                 ]
             ),
@@ -513,6 +513,10 @@ def test_tasks_stream_endpoint_success_and_failure():
 
         assert [event["event"] for event in events] == ["delta", "delta", "result", "done"]
         assert events[2]["data"]["action_type"] == "modify"
+        assert events[2]["data"]["updated_file_content"] == "print(1)\n"
+        assert events[2]["data"]["edits"] == [
+            {"old_text": "print(0)\n", "new_text": "print(1)\n"}
+        ]
 
     with TemporaryDirectory() as temp_dir:
         db_path = Path(temp_dir) / "tailevents.db"
@@ -536,6 +540,34 @@ def test_tasks_stream_endpoint_success_and_failure():
 
         assert [event["event"] for event in events] == ["delta", "error", "done"]
         assert "JSON" in events[1]["data"]["message"]
+
+    with TemporaryDirectory() as temp_dir:
+        db_path = Path(temp_dir) / "tailevents.db"
+        invalid_action_app = create_app(
+            settings=Settings(db_path=str(db_path)),
+            llm_client=FakeStreamingLLMClient(
+                [
+                    '{"edits":[{"old_text":"print(0)\\n","new_text":"print(1)\\n"}],',
+                    '"intent":"add print","reasoning":null,"action_type":"rename"}',
+                ]
+            ),
+            doc_retriever=FakeDocRetriever(),
+        )
+        with TestClient(invalid_action_app) as client:
+            with client.stream(
+                "POST",
+                "/api/v1/tasks/stream",
+                json={
+                    "file_path": "demo.py",
+                    "file_content": "print(0)\n",
+                    "user_prompt": "change the output to 1",
+                },
+            ) as response:
+                assert response.status_code == 200
+                events = parse_sse_events(response.iter_lines())
+
+        assert [event["event"] for event in events] == ["delta", "delta", "error", "done"]
+        assert "validation" in events[2]["data"]["message"].lower()
 
 
 def parse_sse_events(lines) -> list[dict]:

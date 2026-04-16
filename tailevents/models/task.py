@@ -13,13 +13,21 @@ class CodingTaskRequest(BaseModel):
     user_prompt: str
 
 
+class CodingTaskEdit(BaseModel):
+    """An exact-match replacement block returned by the model."""
+
+    old_text: str
+    new_text: str
+
+
 class CodingTaskResult(BaseModel):
     """Validated result returned by the coding task model."""
 
     updated_file_content: str
+    edits: list[CodingTaskEdit]
     intent: str
     reasoning: Optional[str] = None
     action_type: Literal["create", "modify"]
 
 
-__all__ = ["CodingTaskRequest", "CodingTaskResult"]
+__all__ = ["CodingTaskEdit", "CodingTaskRequest", "CodingTaskResult"]
