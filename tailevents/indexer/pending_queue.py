@@ -18,6 +18,9 @@ class PendingQueue:
     def remove(self, event_id: str) -> None:
         self._events.pop(event_id, None)
 
+    def clear(self) -> None:
+        self._events.clear()
+
     async def retry_all(self, indexer) -> None:
         for event in list(self._events.values()):
             result = await indexer._process_event(  # noqa: SLF001

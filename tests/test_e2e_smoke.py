@@ -35,39 +35,45 @@ class DeterministicLLMClient:
     ) -> str:
         self.calls += 1
         if "Qualified Name: fetch_api_data" in user_prompt:
-            return """作用
+            return """核心作用
 负责从远端 API 拉取数据，并在失败时返回安全结果。
-参数
-- url: 请求地址
-返回值
-返回接口响应文本。
-使用场景
+
+关键上下文
 被 DataProcessor.process 调用，用于获取原始数据。
-设计背景
-最初以 fetch_data 创建，后续补充错误处理并重命名为 fetch_api_data，以突出 API 语义。
+
+关键事件
+- 最初以 fetch_data 形式创建。
+- 后续补充错误处理。
+- 最终重命名为 fetch_api_data，以突出 API 语义。
+
+关联实体
+- caller: DataProcessor.process
 """
         if "Qualified Name: DataProcessor.process" in user_prompt:
-            return """作用
+            return """核心作用
 调用 fetch_api_data 获取原始数据，记录日志后完成处理。
-参数
-- url: 数据来源地址
-返回值
-返回处理后的结果。
-使用场景
-作为 DataProcessor 的主处理入口。
-设计背景
-为了把数据拉取和处理解耦，process 会显式调用 fetch_api_data，并在后续修改中加入日志。
+
+关键上下文
+这是 DataProcessor 的主处理入口。
+
+关键事件
+- 初始版本引入 process 以复用 fetch_api_data。
+- 后续修改加入日志记录。
+
+关联实体
+- callee: fetch_api_data
 """
-        return """作用
+        return """核心作用
 提供实体说明。
-参数
-- value: 输入值
-返回值
-返回处理结果。
-使用场景
+
+关键上下文
 用于 smoke test。
-设计背景
-用于验证 explanation pipeline。
+
+关键事件
+- 用于验证 explanation pipeline。
+
+关联实体
+- caller: smoke test
 """
 
 

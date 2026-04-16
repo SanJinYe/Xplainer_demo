@@ -18,16 +18,18 @@ from tailevents.query import LocationResolver, QueryRouter, SymbolResolver
 from tailevents.storage import SQLiteConnectionManager, SQLiteEntityDB, initialize_db
 
 
-STRUCTURED_OUTPUT = """作用
-负责提供结构化说明。
-参数
-- value: 输入值
-返回值
-返回转换后的结果。
-使用场景
-用于测试 explanation API。
-设计背景
-为了验证 query 和 API 链路。
+STRUCTURED_OUTPUT = """核心作用
+提供结构化说明，并输出稳定的默认 explanation。
+
+关键上下文
+这是 explanation API 的测试样例，用于验证返回形状和缓存。
+
+关键事件
+- 初始实现了基础 explanation 路径。
+- 当前样例改成四段式输出。
+
+关联实体
+- caller: api tests
 """
 
 
@@ -487,6 +489,45 @@ def test_explanations_and_admin_endpoints(api_client):
     entities_after_reindex = api_client.get("/api/v1/entities")
     assert entities_after_reindex.status_code == 200
     assert len(entities_after_reindex.json()) >= 5
+
+
+def test_admin_reset_state_clears_runtime_data(api_client):
+    seeded = seed_api_data(api_client)
+    helper_id = seeded["helper"]["entity_id"]
+
+    explained = api_client.get(f"/api/v1/explain/{helper_id}/summary")
+    assert explained.status_code == 200
+
+    created_task = api_client.post(
+        "/api/v1/coding/tasks",
+        json={
+            "target_file_path": "pkg/demo.py",
+            "target_file_version": 1,
+            "user_prompt": "Change the return value to 1",
+            "context_files": [],
+        },
+    )
+    assert created_task.status_code == 201
+
+    reset = api_client.post("/api/v1/admin/reset-state")
+    assert reset.status_code == 200
+    assert reset.json()["events_deleted"] == 3
+    assert reset.json()["entities_deleted"] >= 5
+    assert reset.json()["relations_deleted"] >= 1
+    assert reset.json()["cancelled_tasks"] == 1
+
+    stats = api_client.get("/api/v1/admin/stats")
+    assert stats.status_code == 200
+    stats_payload = stats.json()
+    assert stats_payload["entity_count"] == 0
+    assert stats_payload["event_count"] == 0
+    assert stats_payload["relation_count"] == 0
+    assert stats_payload["cache_hits"] == 0
+    assert stats_payload["cache_misses"] == 0
+
+    listed_events = api_client.get("/api/v1/events")
+    assert listed_events.status_code == 200
+    assert listed_events.json() == []
 
 
 def test_api_error_responses(api_client):

@@ -83,15 +83,21 @@ class ExplanationEngine(ExplanationEngineProtocol):
             if include_relations
             else []
         )
+        doc_snippets_for_prompt = doc_snippets if detail_level != "summary" else []
 
         context = self._context_assembler.assemble(
             entity=entity,
             events=events,
             related_entities=related_entities,
-            doc_snippets=doc_snippets,
+            doc_snippets=doc_snippets_for_prompt,
             detail_level=detail_level,
         )
-        user_prompt = self._build_user_prompt(detail_level, context, doc_snippets)
+        user_prompt = self._build_user_prompt(
+            detail_level=detail_level,
+            context=context,
+            doc_snippets=doc_snippets_for_prompt,
+            baseline_only=self._is_baseline_only(events),
+        )
         raw_output = await self._llm_client.generate(
             system_prompt=SYSTEM_PROMPT,
             user_prompt=user_prompt,
@@ -99,7 +105,11 @@ class ExplanationEngine(ExplanationEngineProtocol):
             temperature=self._temperature,
         )
 
-        explanation = self._formatter.format(entity, raw_output)
+        explanation = self._formatter.format(
+            entity,
+            raw_output,
+            detail_level=detail_level,
+        )
         explanation.creation_intent = explanation.creation_intent or self._creation_intent(
             events
         )
@@ -227,7 +237,11 @@ class ExplanationEngine(ExplanationEngineProtocol):
         return related_entities
 
     def _build_user_prompt(
-        self, detail_level: str, context: str, doc_snippets: list[dict]
+        self,
+        detail_level: str,
+        context: str,
+        doc_snippets: list[dict],
+        baseline_only: bool,
     ) -> str:
         template = PROMPT_TEMPLATES[detail_level]
         prompt = template.format(context=context)
@@ -235,6 +249,12 @@ class ExplanationEngine(ExplanationEngineProtocol):
             prompt = (
                 f"{prompt}\n\n"
                 f"{EXTERNAL_DOC_PROMPT.format(external_context=self._format_external_context(doc_snippets))}"
+            )
+        if baseline_only:
+            prompt = (
+                f"{prompt}\n\n"
+                "补充约束：当前上下文只有 baseline 事件且缺少 reasoning，不要猜测创建动机、"
+                "设计初衷或替代方案，只描述当前代码结构、行为和直接上下文角色。"
             )
         return prompt
 
@@ -292,10 +312,18 @@ class ExplanationEngine(ExplanationEngineProtocol):
 
     def _max_tokens(self, detail_level: str) -> int:
         if detail_level == "summary":
-            return 600
+            return 250
         if detail_level == "trace":
             return 1400
-        return 1000
+        return 1800
+
+    def _is_baseline_only(self, events: list[TailEvent]) -> bool:
+        return bool(
+            len(events) == 1
+            and events[0].action_type.value == "baseline"
+            and not events[0].reasoning
+            and not events[0].decision_alternatives
+        )
 
 
 __all__ = ["ExplanationEngine"]

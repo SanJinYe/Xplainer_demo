@@ -29,6 +29,13 @@ async def clear_cache(
     return await container.clear_cache()
 
 
+@router.post("/reset-state")
+async def reset_state(
+    container: AppContainer = Depends(get_container),
+) -> dict[str, int]:
+    return await container.reset_state()
+
+
 @router.get("/health")
 async def health(
     container: AppContainer = Depends(get_container),

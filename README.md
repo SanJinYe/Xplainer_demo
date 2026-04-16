@@ -1,23 +1,19 @@
 # TailEvents Coding Explanation Agent
 
-TailEvents 是一个面向 AI 编码会话的可解释性后端与 VSCode 扩展组合。它记录结构化编码事件，按代码实体建立索引，并在需要时生成解释；同时也开始支持一个最小但真实的 coding agent 闭环。
+TailEvents 是一个面向 AI 编码会话的可解释性后端与 VS Code 扩展组合。
 
-## 当前状态
+它当前已经不是单纯的 Requirement A backend，而是三条线并行推进的工作基座：
+- Requirement A 后端主链路已完成并可运行
+- `B-next` 最小真实 coding agent 已落地
+- `C1` baseline onboarding 已落地
+- `A1` explanation 收缩第一轮工程实现已落地
 
-- Requirement A 后端闭环已完成并可运行
-- `vscode-extension/` 已从 explain-only MVP 演进到 `B-next`：
-  - `Explain` 模式：hover、侧边栏 explanation、history、related entities
-  - `Code` 模式：backend 编排的 `view -> edit -> verify -> Apply`
-  - `Step Transcript`、`Model Output`、`Verified Draft` 三块输出
-- 支持三种 LLM backend：
-  - `ollama`
-  - `claude`
-  - `openrouter`
+## 当前能力
 
-## 核心链路
+### 解释链路
 
 ```text
-Coding Agent / VSCode Extension
+RawEvent / Baseline Event
   -> IngestionPipeline
   -> Event Store (SQLite)
   -> Indexer (AST)
@@ -28,10 +24,20 @@ Coding Agent / VSCode Extension
   -> FastAPI
 ```
 
-`B-next` 的 coding task 链路是：
+当前 explanation 默认路径：
+- `summary` 使用独立短摘要 prompt
+- 默认 detailed 为四段：
+  - `核心作用`
+  - `关键上下文`
+  - `关键事件`
+  - `关联实体`
+- `summary` 强制 `<= 2` 句且 `<= 120` 中文字
+- detailed 强制分段硬上限，总长 `<= 1200` 中文字
+
+### B-next coding task 链路
 
 ```text
-VSCode Code Mode
+VS Code Code Mode
   -> POST /api/v1/coding/tasks
   -> backend task session
   -> view_file tool call
@@ -39,10 +45,35 @@ VSCode Code Mode
   -> verified draft
   -> Apply
   -> POST /api/v1/events
-  -> existing ingestion / explain chain
+  -> existing explanation chain
 ```
 
-## 主要目录
+当前 `Code` 模式固定包含：
+- prompt 输入
+- 目标文件
+- 最多 `2` 个只读 context files
+- `Run / Cancel / Apply`
+- `Step Transcript`
+- `Model Output`
+- `Verified Draft`
+
+### C1 baseline onboarding 链路
+
+```text
+TailEvents: Onboard Repository
+  -> POST /api/v1/baseline/onboard-file
+  -> IngestionPipeline
+  -> Indexer
+  -> Entity / Relation Store
+```
+
+当前 C1 约束：
+- 只处理当前 workspace 下的 `.py` 文件
+- 同路径同内容 baseline 不重复写入
+- 已有真实 trace 的文件会被跳过
+- 本地与后端都限制单文件 `<= 512 KB`
+
+## 目录结构
 
 - `tailevents/models/`
 - `tailevents/config/`
@@ -52,31 +83,48 @@ VSCode Code Mode
 - `tailevents/explanation/`
 - `tailevents/query/`
 - `tailevents/api/`
-- `tailevents/graph/`（stub）
 - `tailevents/ingestion/`
 - `tailevents/coding/`
+- `tailevents/graph/`：stub
 - `vscode-extension/`
 
 ## 主要 API
 
-说明类接口：
+### 基础 explanation / indexing
 
-- `/api/v1/events`
-- `/api/v1/entities`
-- `/api/v1/explain`
-- `/api/v1/relations`
-- `/api/v1/admin`
+- `POST /api/v1/events`
+- `POST /api/v1/events/batch`
+- `GET /api/v1/events`
+- `GET /api/v1/entities`
+- `GET /api/v1/entities/search`
+- `POST /api/v1/explain`
+- `GET /api/v1/explain/{entity_id}`
+- `GET /api/v1/explain/{entity_id}/summary`
+- `GET /api/v1/relations/{entity_id}/incoming`
+- `GET /api/v1/relations/{entity_id}/outgoing`
 
-`B-next` coding task 接口：
+### B-next coding task
 
 - `POST /api/v1/coding/tasks`
 - `GET /api/v1/coding/tasks/{task_id}/stream`
 - `POST /api/v1/coding/tasks/{task_id}/tool-result`
 - `POST /api/v1/coding/tasks/{task_id}/cancel`
 
+### C1 baseline onboarding
+
+- `POST /api/v1/baseline/onboard-file`
+
+### Admin / local debug
+
+- `GET /api/v1/admin/stats`
+- `GET /api/v1/admin/health`
+- `POST /api/v1/admin/cache/clear`
+- `POST /api/v1/admin/reindex`
+- `POST /api/v1/admin/reset-state`
+
 ## 环境变量
 
-项目读取仓库根目录 `.env`。
+项目从仓库根目录 `.env` 读取配置。
 
 ### Ollama
 
@@ -108,7 +156,7 @@ TAILEVENTS_CLAUDE_MODEL=claude-sonnet-4-20250514
 TAILEVENTS_PROXY_URL=http://127.0.0.1:7897
 ```
 
-## 运行方式
+## 启动方式
 
 安装依赖：
 
@@ -122,103 +170,65 @@ pip install -r requirements.txt
 python -m tailevents.main
 ```
 
-或：
+或者：
 
 ```bash
 uvicorn tailevents.main:app --host 127.0.0.1 --port 8766
 ```
 
-启动后访问：
-
+Swagger:
 - `http://127.0.0.1:8766/docs`
 - `http://127.0.0.1:8766/redoc`
 
-## VSCode 手动调试
+## VS Code 手测入口
 
-基础流程：
+手测脚本位于 `vscode-extension/scripts/`。
 
-1. 启动后端：
+常用入口：
 
-   ```powershell
-   cd vscode-extension
-   npm run test:manual:backend
-   ```
+```powershell
+cd vscode-extension
+npm run test:manual:backend
+npm run test:manual:prepare
+```
 
-2. 编译 extension 并准备基础 explain 数据：
+然后在仓库根目录按 `F5 -> Run Extension`。
 
-   ```powershell
-   cd vscode-extension
-   npm run test:manual:prepare
-   ```
-
-3. 在仓库根目录按 `F5 -> Run Extension`
-
-当前 Extension Host 使用独立 workspace 文件：
-
+当前 Extension Host 使用独立 workspace：
 - [.vscode/extension-host.code-workspace](.vscode/extension-host.code-workspace)
 
-主要手测样例：
-
+主要手测 fixture：
 - [manual_test_target.py](vscode-extension/manual_test_target.py)
 - [manual_test_complex_target.py](vscode-extension/manual_test_complex_target.py)
 
-`Code` 模式当前固定包含三块输出：
+## 最近验证
 
-- `Step Transcript`
-  - 只显示 task / status / tool_call / view / edit / verify
-- `Model Output`
-  - 只显示模型原始 token 流
-- `Verified Draft`
-  - 只显示 verify 成功后的最终 draft
+本轮已验证：
+- `.\.venv\Scripts\python.exe -m pytest tests/test_explanation.py tests/test_api.py tests/test_e2e_smoke.py -q`
+  - `32 passed`
 
-手测时最关键的检查点是：
-
-- `Run` 后要同时看到 transcript 和 model token 流
-- 只有 verified draft 出来后 `Apply` 才可点击
-- no-op edit 必须显示在 `edit/failed`
-- 成功 `Apply` 后才会写最终 `RawEvent`
-- 对复杂样例，在首次成功 `Apply` 前如果 explain 返回 404，这属于预期
-
-## 当前验证结果
-
-目标自动测试当前通过：
-
+此前已验证：
+- `.\.venv\Scripts\python.exe -m pytest tests/test_ingestion.py tests/test_api.py -q`
+  - `21 passed`
 - `cd vscode-extension && npm test`
-  - `31 passing`
-- `.\.venv\Scripts\python.exe -m pytest tests/test_coding.py tests/test_api.py -q`
-  - `15 passed`
-
-说明：
-
-- 这两组是当前 `B-next` 的目标测试
-- 不代表根目录所有历史测试都在当前 shell 环境下全绿
-
-当前已经人工验证过的行为包括：
-
-- hover summary
-- `TailEvents: Explain Current Symbol`
-- explanation sidebar 的 history / related entities
-- `Code` 模式下的 `Run / Cancel / Apply`
-- `view -> edit -> verify -> final RawEvent` 闭环
+  - `37 passing`
 
 ## 当前边界
 
-当前 `B-next` 仍然只做：
-
-- 单文件编辑
-- 最多 2 个显式只读上下文文件
-- backend 编排 loop
+当前系统仍然只做：
+- 单文件 coding task
+- 最多 `2` 个显式只读 context files
 - 人工 `Apply`
+- explanation 默认路径的工程收缩
 
-当前不做：
-
-- 多文件编辑
-- repo 级自主搜索
-- task history 页面
-- 多模型 profile UI
-- MCP / skills
+当前尚未做：
+- repo 级搜索和多文件规划
+- panel 流式 explanation
+- baseline-aware explanation 文案层
+- GraphRAG / 全局影响路径
 
 ## 参考
 
 - [docs/requirements.md](docs/requirements.md)
 - [docs/system_design.md](docs/system_design.md)
+- [NEXT_PHASE_TASK.md](NEXT_PHASE_TASK.md)

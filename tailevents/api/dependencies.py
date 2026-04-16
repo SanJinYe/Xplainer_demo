@@ -90,6 +90,39 @@ class AppContainer:
         await self.cache.clear_all()
         return await self.cache.stats()
 
+    async def reset_state(self) -> dict[str, int]:
+        """Clear all persisted runtime state for local manual testing."""
+
+        entity_count = len(await self.entity_db.get_all())
+        event_count = await self.event_store.count()
+        relation_count = len(await self.relation_store.get_all_active())
+        task_step_count = await self._count_rows("task_step_events")
+        cancelled_tasks = await self.coding_task_service.reset_all_sessions()
+
+        async with self.db_manager.connection() as connection:
+            await connection.executescript(
+                """
+                DELETE FROM task_step_events;
+                DELETE FROM relations;
+                DELETE FROM entity_search;
+                DELETE FROM entities;
+                DELETE FROM explanation_cache;
+                DELETE FROM events;
+                """
+            )
+            await connection.commit()
+
+        self.indexer.pending_queue.clear()
+        self.cache.reset_metrics()
+
+        return {
+            "events_deleted": event_count,
+            "entities_deleted": entity_count,
+            "relations_deleted": relation_count,
+            "task_steps_deleted": task_step_count,
+            "cancelled_tasks": cancelled_tasks,
+        }
+
     async def reindex_all(self) -> dict[str, int]:
         """Replay all events after clearing index-side tables."""
 
@@ -149,6 +182,17 @@ class AppContainer:
             )
             await connection.commit()
         self.cache.reset_metrics()
+
+    async def _count_rows(self, table_name: str) -> int:
+        async with self.db_manager.connection() as connection:
+            cursor = await connection.execute(
+                f"SELECT COUNT(*) AS count FROM {table_name}"
+            )
+            row = await cursor.fetchone()
+            await cursor.close()
+        if row is None:
+            return 0
+        return int(row["count"])
 
 
 def build_lifespan(

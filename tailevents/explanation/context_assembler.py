@@ -1,7 +1,5 @@
 """Assemble structured context for explanation prompts."""
 
-from collections import defaultdict
-
 from tailevents.explanation.exceptions import InvalidDetailLevelError
 from tailevents.models.entity import CodeEntity
 from tailevents.models.event import TailEvent
@@ -25,13 +23,53 @@ class ContextAssembler:
             raise InvalidDetailLevelError(f"Unsupported detail level: {detail_level}")
 
         ordered_events = sorted(events, key=lambda item: item.timestamp)
+        if detail_level == "summary":
+            return self._assemble_summary(entity, ordered_events)
+        if detail_level == "detailed":
+            return self._assemble_detailed(
+                entity=entity,
+                events=ordered_events,
+                related_entities=related_entities,
+                doc_snippets=doc_snippets,
+            )
+        return self._assemble_trace(entity, ordered_events, related_entities, doc_snippets)
+
+    def _assemble_summary(self, entity: CodeEntity, events: list[TailEvent]) -> str:
         sections = [
             self._format_target_entity(entity),
-            self._format_creation_context(ordered_events),
+            self._format_event_context(self._select_summary_events(events)),
         ]
+        return "\n\n".join(section for section in sections if section)
 
-        if detail_level in {"detailed", "trace"}:
-            sections.append(self._format_modification_history(ordered_events))
+    def _assemble_detailed(
+        self,
+        entity: CodeEntity,
+        events: list[TailEvent],
+        related_entities: list[dict],
+        doc_snippets: list[dict],
+    ) -> str:
+        callers, callees = self._select_call_relations(related_entities)
+        sections = [
+            self._format_target_entity(entity),
+            self._format_event_context(self._select_detailed_events(events)),
+            self._format_call_relations(callers, callees),
+        ]
+        if doc_snippets:
+            sections.append(self._format_external_docs(doc_snippets))
+        return "\n\n".join(section for section in sections if section)
+
+    def _assemble_trace(
+        self,
+        entity: CodeEntity,
+        events: list[TailEvent],
+        related_entities: list[dict],
+        doc_snippets: list[dict],
+    ) -> str:
+        sections = [
+            self._format_target_entity(entity),
+            self._format_creation_context(events),
+            self._format_modification_history(events),
+        ]
 
         relation_section = self._format_relations(related_entities)
         if relation_section:
@@ -40,9 +78,7 @@ class ContextAssembler:
         if doc_snippets:
             sections.append(self._format_external_docs(doc_snippets))
 
-        if detail_level == "trace":
-            sections.append(self._format_event_trace(ordered_events))
-
+        sections.append(self._format_event_trace(events))
         return "\n\n".join(section for section in sections if section)
 
     def _format_target_entity(self, entity: CodeEntity) -> str:
@@ -59,6 +95,23 @@ class ContextAssembler:
             lines.append(f"Signature: {entity.signature}")
         if entity.docstring:
             lines.append(f"Docstring: {entity.docstring}")
+        return "\n".join(lines)
+
+    def _format_event_context(self, events: list[TailEvent]) -> str:
+        if not events:
+            return "# Event Context\nNo event context available."
+
+        lines = ["# Event Context"]
+        for index, event in enumerate(events):
+            lines.append(
+                f"- Event {index + 1}: {event.action_type.value} @ {event.timestamp.isoformat()}"
+            )
+            lines.append(f"  Intent: {event.intent}")
+            if event.reasoning:
+                lines.append(f"  Reasoning: {event.reasoning}")
+            if event.decision_alternatives:
+                alternatives = ", ".join(event.decision_alternatives)
+                lines.append(f"  Alternatives: {alternatives}")
         return "\n".join(lines)
 
     def _format_creation_context(self, events: list[TailEvent]) -> str:
@@ -94,14 +147,75 @@ class ContextAssembler:
                 lines.append(f"  Reasoning: {event.reasoning}")
         return "\n".join(lines)
 
+    def _select_summary_events(self, events: list[TailEvent]) -> list[TailEvent]:
+        if not events:
+            return []
+        selected = [events[0]]
+        if len(events) > 1 and events[-1].event_id != events[0].event_id:
+            selected.append(events[-1])
+        return selected
+
+    def _select_detailed_events(self, events: list[TailEvent]) -> list[TailEvent]:
+        if not events:
+            return []
+        selected = [events[0]]
+        seen = {events[0].event_id}
+        for event in reversed(events[1:]):
+            if event.event_id in seen:
+                continue
+            selected.append(event)
+            seen.add(event.event_id)
+            if len(selected) == 3:
+                break
+        return selected
+
+    def _select_call_relations(
+        self, related_entities: list[dict]
+    ) -> tuple[list[dict], list[dict]]:
+        callers: list[dict] = []
+        callees: list[dict] = []
+
+        for relation in related_entities:
+            if relation.get("relation_type") != "calls":
+                continue
+            if relation.get("direction") == "incoming" and len(callers) < 2:
+                callers.append(relation)
+            elif relation.get("direction") == "outgoing" and len(callees) < 2:
+                callees.append(relation)
+
+        return callers, callees
+
+    def _format_call_relations(self, callers: list[dict], callees: list[dict]) -> str:
+        if not callers and not callees:
+            return ""
+
+        lines = ["# Call Relations"]
+        if callers:
+            lines.append("Incoming callers:")
+            lines.extend(self._format_call_relation_items(callers))
+        if callees:
+            lines.append("Outgoing callees:")
+            lines.extend(self._format_call_relation_items(callees))
+        return "\n".join(lines)
+
+    def _format_call_relation_items(self, relations: list[dict]) -> list[str]:
+        items = []
+        for relation in relations:
+            item = f"- {relation['qualified_name']} ({relation['entity_type']})"
+            context = relation.get("context")
+            if context:
+                item = f"{item} - {context}"
+            items.append(item)
+        return items
+
     def _format_relations(self, related_entities: list[dict]) -> str:
         if not related_entities:
             return ""
-
-        grouped: dict[str, list[str]] = defaultdict(list)
+        grouped: dict[str, list[str]] = {}
         for relation in related_entities:
             label = self._relation_group_label(relation)
             item = self._relation_item(relation)
+            grouped.setdefault(label, [])
             if item not in grouped[label]:
                 grouped[label].append(item)
 

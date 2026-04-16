@@ -1,8 +1,8 @@
 from datetime import datetime, timedelta
 
+import httpx
 import pytest
 import pytest_asyncio
-import httpx
 
 from tailevents.cache import ExplanationCache
 from tailevents.config import Settings
@@ -38,17 +38,37 @@ from tailevents.storage import (
 )
 
 
-STRUCTURED_OUTPUT = """作用
-负责执行网络请求并封装重试逻辑。
+STRUCTURED_OUTPUT = """核心作用
+统一发起外部请求并封装超时控制，对上层调用方暴露稳定入口。
+
+关键上下文
+这是 client 层默认的网络访问入口，被多个调用方复用。
+
+关键事件
+- 初始创建时集中远程访问逻辑。
+- 后续修改加入超时控制。
+- 最近一次修改补充请求头构建。
+
+关联实体
+- caller: ApiClient.fetch_profile
+- callee: build_headers
+"""
+
+LEGACY_STRUCTURED_OUTPUT = """作用
+负责执行网络请求并统一失败处理。
+
 参数
 - url: 目标地址
 - timeout: 超时时间
+
 返回值
-返回解析后的响应对象。
+返回解析后的响应结果。
+
 使用场景
 用于 API 客户端访问远程服务。
+
 设计背景
-最初为了统一失败重试策略而创建，后续加入超时控制。
+最初为了集中远程访问逻辑，后续加入超时控制。
 """
 
 
@@ -130,6 +150,7 @@ async def seed_explanation_data(bundle):
 
     created_at = datetime(2026, 4, 13, 12, 0, 0)
     modified_at = created_at + timedelta(minutes=15)
+    latest_at = modified_at + timedelta(minutes=15)
 
     create_event = TailEvent(
         action_type=ActionType.CREATE,
@@ -137,7 +158,7 @@ async def seed_explanation_data(bundle):
         line_range=(1, 8),
         code_snapshot="def fetch_data(url, timeout=1.0):\n    return {}\n",
         intent="创建统一的网络请求入口",
-        reasoning="把远程调用集中到一个函数，方便后续加重试。",
+        reasoning="把远程调用集中到一个函数，便于后续补充能力。",
         timestamp=created_at,
         external_refs=[
             ExternalRef(
@@ -152,21 +173,30 @@ async def seed_explanation_data(bundle):
         file_path="client.py",
         line_range=(1, 10),
         code_snapshot="def fetch_data(url, timeout=1.0):\n    return {}\n",
-        intent="为调用增加超时控制",
-        reasoning="避免外部接口阻塞太久。",
-        decision_alternatives=["全局默认超时", "逐调用超时参数"],
+        intent="增加超时控制",
+        reasoning="避免外部接口长时间阻塞。",
+        decision_alternatives=["全局默认超时", "调用方传入超时参数"],
         timestamp=modified_at,
     )
+    latest_event = TailEvent(
+        action_type=ActionType.MODIFY,
+        file_path="client.py",
+        line_range=(1, 12),
+        code_snapshot="def fetch_data(url, timeout=1.0):\n    return {}\n",
+        intent="补充请求头构建",
+        reasoning="统一 headers 生成逻辑。",
+        timestamp=latest_at,
+    )
 
-    await event_store.put(create_event)
-    await event_store.put(modify_event)
+    for event in [create_event, modify_event, latest_event]:
+        await event_store.put(event)
 
     entity = CodeEntity(
         name="fetch_data",
         qualified_name="fetch_data",
         entity_type=EntityType.FUNCTION,
         file_path="client.py",
-        line_range=(1, 10),
+        line_range=(1, 12),
         signature="def fetch_data(url: str, timeout: float = 1.0) -> dict",
         params=[
             ParamInfo(name="url", type_hint="str"),
@@ -175,9 +205,9 @@ async def seed_explanation_data(bundle):
         return_type="dict",
         created_at=created_at,
         created_by_event=create_event.event_id,
-        last_modified_event=modify_event.event_id,
-        last_modified_at=modified_at,
-        modification_count=1,
+        last_modified_event=latest_event.event_id,
+        last_modified_at=latest_at,
+        modification_count=2,
         event_refs=[
             EventRef(
                 event_id=create_event.event_id,
@@ -189,6 +219,11 @@ async def seed_explanation_data(bundle):
                 role=EntityRole.MODIFIED,
                 timestamp=modify_event.timestamp,
             ),
+            EventRef(
+                event_id=latest_event.event_id,
+                role=EntityRole.MODIFIED,
+                timestamp=latest_event.timestamp,
+            ),
         ],
     )
     await entity_db.upsert(entity)
@@ -198,11 +233,30 @@ async def seed_explanation_data(bundle):
         qualified_name="build_headers",
         entity_type=EntityType.FUNCTION,
         file_path="client.py",
-        line_range=(12, 16),
+        line_range=(14, 18),
         signature="def build_headers() -> dict",
         created_at=created_at,
     )
-    await entity_db.upsert(helper_entity)
+    caller_entity = CodeEntity(
+        name="fetch_profile",
+        qualified_name="ApiClient.fetch_profile",
+        entity_type=EntityType.METHOD,
+        file_path="api_client.py",
+        line_range=(5, 9),
+        signature="def fetch_profile(self, user_id: str) -> dict",
+        created_at=created_at,
+    )
+    importer_entity = CodeEntity(
+        name="HttpClient",
+        qualified_name="HttpClient",
+        entity_type=EntityType.CLASS,
+        file_path="transport.py",
+        line_range=(1, 10),
+        created_at=created_at,
+    )
+
+    for related_entity in [helper_entity, caller_entity, importer_entity]:
+        await entity_db.upsert(related_entity)
 
     await relation_store.put(
         Relation(
@@ -210,29 +264,88 @@ async def seed_explanation_data(bundle):
             target=helper_entity.entity_id,
             relation_type=RelationType.CALLS,
             provenance=Provenance.AST_DERIVED,
-            from_event=modify_event.event_id,
+            from_event=latest_event.event_id,
             context="build request headers before sending",
+        )
+    )
+    await relation_store.put(
+        Relation(
+            source=caller_entity.entity_id,
+            target=entity.entity_id,
+            relation_type=RelationType.CALLS,
+            provenance=Provenance.AST_DERIVED,
+            from_event=latest_event.event_id,
+            context="fetch the remote profile",
+        )
+    )
+    await relation_store.put(
+        Relation(
+            source=entity.entity_id,
+            target=importer_entity.entity_id,
+            relation_type=RelationType.IMPORTS,
+            provenance=Provenance.AST_DERIVED,
+            from_event=create_event.event_id,
+            context="reuse transport client",
         )
     )
 
     return {
         "entity": entity,
         "helper_entity": helper_entity,
-        "events": [create_event, modify_event],
+        "caller_entity": caller_entity,
+        "importer_entity": importer_entity,
+        "events": [create_event, modify_event, latest_event],
     }
+
+
+async def seed_baseline_only_entity(bundle):
+    entity_db = bundle["entity_db"]
+    event_store = bundle["event_store"]
+
+    baseline_event = TailEvent(
+        action_type=ActionType.BASELINE,
+        file_path="pkg/settings.py",
+        code_snapshot="class Settings:\n    pass\n",
+        intent="Bootstrap existing repository file",
+        reasoning=None,
+        decision_alternatives=None,
+        timestamp=datetime(2026, 4, 16, 10, 0, 0),
+    )
+    await event_store.put(baseline_event)
+
+    entity = CodeEntity(
+        name="Settings",
+        qualified_name="Settings",
+        entity_type=EntityType.CLASS,
+        file_path="pkg/settings.py",
+        line_range=(1, 2),
+        signature="class Settings",
+        created_at=baseline_event.timestamp,
+        created_by_event=baseline_event.event_id,
+        last_modified_event=baseline_event.event_id,
+        last_modified_at=baseline_event.timestamp,
+        event_refs=[
+            EventRef(
+                event_id=baseline_event.event_id,
+                role=EntityRole.PRIMARY,
+                timestamp=baseline_event.timestamp,
+            )
+        ],
+    )
+    await entity_db.upsert(entity)
+    return {"entity": entity, "event": baseline_event}
 
 
 def test_context_assembler_handles_detail_levels():
     assembler = ContextAssembler()
     created_at = datetime(2026, 4, 13, 12, 0, 0)
-    modified_at = created_at + timedelta(minutes=5)
 
     entity = CodeEntity(
         name="fetch_data",
         qualified_name="fetch_data",
         entity_type=EntityType.FUNCTION,
         file_path="client.py",
-        line_range=(1, 10),
+        line_range=(1, 12),
         signature="def fetch_data(url: str) -> dict",
     )
     events = [
@@ -250,18 +363,75 @@ def test_context_assembler_handles_detail_levels():
             code_snapshot="def fetch_data(url):\n    return {}\n",
             intent="增加超时控制",
             reasoning="避免阻塞。",
-            decision_alternatives=["默认超时", "调用方传参"],
-            timestamp=modified_at,
+            timestamp=created_at + timedelta(minutes=5),
+        ),
+        TailEvent(
+            action_type=ActionType.MODIFY,
+            file_path="client.py",
+            code_snapshot="def fetch_data(url):\n    return {}\n",
+            intent="重构重试策略",
+            reasoning="减少重复分支。",
+            timestamp=created_at + timedelta(minutes=10),
+        ),
+        TailEvent(
+            action_type=ActionType.MODIFY,
+            file_path="client.py",
+            code_snapshot="def fetch_data(url):\n    return {}\n",
+            intent="补充请求头构建",
+            reasoning="统一 headers。",
+            timestamp=created_at + timedelta(minutes=15),
         ),
     ]
     related_entities = [
+        {
+            "qualified_name": "Caller.one",
+            "entity_type": "method",
+            "direction": "incoming",
+            "relation_type": "calls",
+            "context": "first caller",
+        },
+        {
+            "qualified_name": "Caller.two",
+            "entity_type": "method",
+            "direction": "incoming",
+            "relation_type": "calls",
+            "context": "second caller",
+        },
+        {
+            "qualified_name": "Caller.three",
+            "entity_type": "method",
+            "direction": "incoming",
+            "relation_type": "calls",
+            "context": "third caller",
+        },
         {
             "qualified_name": "build_headers",
             "entity_type": "function",
             "direction": "outgoing",
             "relation_type": "calls",
             "context": "prepare headers",
-        }
+        },
+        {
+            "qualified_name": "send_request",
+            "entity_type": "function",
+            "direction": "outgoing",
+            "relation_type": "calls",
+            "context": "dispatch request",
+        },
+        {
+            "qualified_name": "parse_response",
+            "entity_type": "function",
+            "direction": "outgoing",
+            "relation_type": "calls",
+            "context": "decode response",
+        },
+        {
+            "qualified_name": "HttpClient",
+            "entity_type": "class",
+            "direction": "incoming",
+            "relation_type": "imports",
+            "context": "transport dependency",
+        },
     ]
     doc_snippets = [
         {
@@ -273,19 +443,34 @@ def test_context_assembler_handles_detail_levels():
     ]
 
     summary = assembler.assemble(entity, events, related_entities, doc_snippets, "summary")
-    detailed = assembler.assemble(
-        entity, events, related_entities, doc_snippets, "detailed"
-    )
+    detailed = assembler.assemble(entity, events, related_entities, doc_snippets, "detailed")
     trace = assembler.assemble(entity, events, related_entities, doc_snippets, "trace")
 
-    assert "# Creation Context" in summary
-    assert "# Modification History" not in summary
-    assert "# Modification History" in detailed
-    assert "# Related Entities" in detailed
-    assert "This entity calls:" in detailed
+    assert "# Event Context" in summary
+    assert "创建网络请求入口" in summary
+    assert "补充请求头构建" in summary
+    assert "增加超时控制" not in summary
+    assert "# Call Relations" not in summary
+    assert "# External Dependencies" not in summary
+
+    assert "# Event Context" in detailed
+    assert "增加超时控制" not in detailed
+    assert "重构重试策略" in detailed
+    assert "补充请求头构建" in detailed
+    assert "# Call Relations" in detailed
+    assert "Caller.one" in detailed
+    assert "Caller.two" in detailed
+    assert "Caller.three" not in detailed
+    assert "build_headers" in detailed
+    assert "send_request" in detailed
+    assert "parse_response" not in detailed
+    assert "HttpClient" not in detailed
     assert "# External Dependencies" in detailed
+
+    assert "# Creation Context" in trace
+    assert "# Modification History" in trace
     assert "# Event Trace" in trace
-    assert "Alternatives: 默认超时, 调用方传参" in trace
+    assert "HttpClient" in trace
 
 
 def test_formatter_parses_structured_output():
@@ -298,16 +483,62 @@ def test_formatter_parses_structured_output():
         signature="def fetch_data(url: str, timeout: float = 1.0) -> dict",
     )
 
-    explanation = formatter.format(entity, STRUCTURED_OUTPUT)
+    explanation = formatter.format(entity, STRUCTURED_OUTPUT, detail_level="detailed")
 
-    assert explanation.summary == "负责执行网络请求并封装重试逻辑。"
+    assert explanation.summary == "统一发起外部请求并封装超时控制，对上层调用方暴露稳定入口。"
+    assert explanation.detailed_explanation is not None
+    assert "核心作用" in explanation.detailed_explanation
+    assert "关键上下文" in explanation.detailed_explanation
+    assert "关键事件" in explanation.detailed_explanation
+    assert "关联实体" in explanation.detailed_explanation
+    assert len(explanation.detailed_explanation) <= 1200
+    assert explanation.param_explanations is None
+    assert explanation.return_explanation is None
+
+
+def test_formatter_summary_enforces_sentence_and_length_limits():
+    formatter = ExplanationFormatter()
+    entity = CodeEntity(
+        name="Settings",
+        qualified_name="Settings",
+        entity_type=EntityType.CLASS,
+        file_path="settings.py",
+    )
+    raw_output = (
+        "第一句说明它做什么。"
+        "第二句说明它对上下文的直接作用。"
+        "第三句不应该被保留。"
+        + ("这" * 140)
+    )
+
+    explanation = formatter.format(entity, raw_output, detail_level="summary")
+
+    assert explanation.detailed_explanation is None
+    assert "第三句不应该被保留" not in explanation.summary
+    assert len(explanation.summary) <= 120
+
+
+def test_formatter_supports_legacy_output():
+    formatter = ExplanationFormatter()
+    entity = CodeEntity(
+        name="fetch_data",
+        qualified_name="fetch_data",
+        entity_type=EntityType.FUNCTION,
+        file_path="client.py",
+    )
+
+    explanation = formatter.format(entity, LEGACY_STRUCTURED_OUTPUT, detail_level="detailed")
+
+    assert explanation.summary == "负责执行网络请求并统一失败处理。"
     assert explanation.param_explanations == {
         "url": "目标地址",
         "timeout": "超时时间",
     }
-    assert explanation.return_explanation == "返回解析后的响应对象。"
+    assert explanation.return_explanation == "返回解析后的响应结果。"
     assert explanation.usage_context == "用于 API 客户端访问远程服务。"
-    assert explanation.creation_intent == "最初为了统一失败重试策略而创建，后续加入超时控制。"
+    assert explanation.creation_intent == "最初为了集中远程访问逻辑，后续加入超时控制。"
+    assert explanation.detailed_explanation is not None
+    assert "核心作用" in explanation.detailed_explanation
 
 
 def test_formatter_falls_back_for_malformed_output():
@@ -319,73 +550,13 @@ def test_formatter_falls_back_for_malformed_output():
         file_path="client.py",
     )
 
-    explanation = formatter.format(entity, "plain text without any expected sections")
+    malformed = "plain text without sections " * 100
+    explanation = formatter.format(entity, malformed, detail_level="detailed")
 
-    assert explanation.summary == "plain text without any expected sections"
-    assert explanation.detailed_explanation == "plain text without any expected sections"
+    assert len(explanation.summary) <= 120
+    assert explanation.detailed_explanation is not None
+    assert len(explanation.detailed_explanation) <= 1200
     assert explanation.param_explanations is None
-
-
-def test_formatter_strips_backticks_from_param_names():
-    formatter = ExplanationFormatter()
-    entity = CodeEntity(
-        name="fetch_data",
-        qualified_name="fetch_data",
-        entity_type=EntityType.FUNCTION,
-        file_path="client.py",
-    )
-
-    explanation = formatter.format(
-        entity,
-        """作用
-读取远程数据
-参数
-- `url`: 目标地址
-- ``timeout``: 超时时间
-返回值
-返回解析后的结果
-使用场景
-API 请求
-设计背景
-保持网络访问统一
-""",
-    )
-
-    assert explanation.param_explanations == {
-        "url": "目标地址",
-        "timeout": "超时时间",
-    }
-
-
-def test_formatter_parses_multiline_param_blocks():
-    formatter = ExplanationFormatter()
-    entity = CodeEntity(
-        name="fetch_api_data",
-        qualified_name="fetch_api_data",
-        entity_type=EntityType.FUNCTION,
-        file_path="client.py",
-    )
-
-    explanation = formatter.format(
-        entity,
-        """作用
-访问远端 API。
-参数
-`url`
-- 类型：字符串 URL
-- 作用：指定要请求的远端地址
-返回值
-返回响应结果。
-使用场景
-在处理流程前获取原始数据。
-设计背景
-为了统一远端访问入口。
-""",
-    )
-
-    assert explanation.param_explanations == {
-        "url": "类型：字符串 URL 作用：指定要请求的远端地址",
-    }
 
 
 @pytest.mark.asyncio
@@ -414,11 +585,13 @@ async def test_engine_cache_miss_then_hit(explanation_bundle):
     )
 
     assert first.from_cache is False
-    assert first.summary == "负责执行网络请求并封装重试逻辑。"
-    assert first.related_entities[0]["qualified_name"] == "build_headers"
+    assert first.summary == "统一发起外部请求并封装超时控制，对上层调用方暴露稳定入口。"
+    assert any(item["qualified_name"] == "build_headers" for item in first.related_entities)
+    assert any(item["qualified_name"] == "ApiClient.fetch_profile" for item in first.related_entities)
     assert first.external_doc_snippets[0]["package"] == "httpx"
-    assert len(first.modification_history) == 1
+    assert len(first.modification_history) == 2
     assert len(llm_client.calls) == 1
+    assert llm_client.calls[0]["max_tokens"] == 1800
     assert await explanation_bundle["cache"].get(
         f"explain:{EXPLANATION_PROMPT_VERSION}:{seeded['entity'].entity_id}:detailed:1"
     ) is not None
@@ -463,6 +636,64 @@ async def test_engine_skips_relation_lookup_when_disabled(explanation_bundle):
     assert explanation.related_entities == []
     assert relation_store.outgoing_calls == 0
     assert relation_store.incoming_calls == 0
+    assert llm_client.calls[0]["max_tokens"] == 250
+
+
+@pytest.mark.asyncio
+async def test_engine_summary_prompt_omits_external_docs(explanation_bundle):
+    seeded = await seed_explanation_data(explanation_bundle)
+    llm_client = FakeLLMClient("统一处理网络请求，并给调用方提供稳定入口。")
+    doc_retriever = FakeDocRetriever(
+        {("httpx", "httpx.get"): "httpx.get issues a GET request and returns a response."}
+    )
+
+    engine = ExplanationEngine(
+        entity_db=explanation_bundle["entity_db"],
+        event_store=explanation_bundle["event_store"],
+        relation_store=explanation_bundle["relation_store"],
+        cache=explanation_bundle["cache"],
+        llm_client=llm_client,
+        doc_retriever=doc_retriever,
+        cache_enabled=False,
+    )
+
+    explanation = await engine.explain_entity(
+        seeded["entity"].entity_id,
+        detail_level="summary",
+        include_relations=False,
+    )
+
+    assert explanation.external_doc_snippets[0]["package"] == "httpx"
+    assert "# External Dependencies" not in llm_client.calls[0]["user_prompt"]
+    assert "httpx.get issues a GET request" not in llm_client.calls[0]["user_prompt"]
+
+
+@pytest.mark.asyncio
+async def test_engine_baseline_only_prompt_adds_guardrail(explanation_bundle):
+    seeded = await seed_baseline_only_entity(explanation_bundle)
+    llm_client = FakeLLMClient(STRUCTURED_OUTPUT)
+
+    engine = ExplanationEngine(
+        entity_db=explanation_bundle["entity_db"],
+        event_store=explanation_bundle["event_store"],
+        relation_store=explanation_bundle["relation_store"],
+        cache=explanation_bundle["cache"],
+        llm_client=llm_client,
+        doc_retriever=FakeDocRetriever(),
+        cache_enabled=False,
+    )
+
+    explanation = await engine.explain_entity(
+        seeded["entity"].entity_id,
+        detail_level="detailed",
+        include_relations=False,
+    )
+
+    assert "不要猜测创建动机" in llm_client.calls[0]["user_prompt"]
+    assert len(explanation.summary) <= 120
+    assert explanation.detailed_explanation is not None
+    assert "核心作用" in explanation.detailed_explanation
+    assert len(explanation.detailed_explanation) <= 1200
 
 
 @pytest.mark.asyncio
@@ -478,30 +709,6 @@ async def test_engine_raises_for_missing_entity(explanation_bundle):
 
     with pytest.raises(EntityExplanationNotFoundError):
         await engine.explain_entity("ent_missing")
-
-
-@pytest.mark.asyncio
-async def test_engine_handles_missing_doc_snippets(explanation_bundle):
-    seeded = await seed_explanation_data(explanation_bundle)
-    llm_client = FakeLLMClient(STRUCTURED_OUTPUT)
-
-    engine = ExplanationEngine(
-        entity_db=explanation_bundle["entity_db"],
-        event_store=explanation_bundle["event_store"],
-        relation_store=explanation_bundle["relation_store"],
-        cache=explanation_bundle["cache"],
-        llm_client=llm_client,
-        doc_retriever=FakeDocRetriever(),
-    )
-
-    explanation = await engine.explain_entity(
-        seeded["entity"].entity_id,
-        detail_level="summary",
-        include_relations=False,
-    )
-
-    assert explanation.external_doc_snippets == []
-    assert len(llm_client.calls) == 1
 
 
 @pytest.mark.asyncio

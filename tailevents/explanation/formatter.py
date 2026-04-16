@@ -7,35 +7,77 @@ from tailevents.models.entity import CodeEntity
 from tailevents.models.explanation import EntityExplanation
 
 
-SECTION_ORDER = ["作用", "参数", "返回值", "使用场景", "设计背景"]
+SUMMARY_MAX_CHARS = 120
+SUMMARY_MAX_SENTENCES = 2
+DETAILED_MAX_CHARS = 1200
+DETAILED_SECTION_ORDER = ["核心作用", "关键上下文", "关键事件", "关联实体"]
+DETAILED_SECTION_LIMITS = {
+    "核心作用": 220,
+    "关键上下文": 280,
+    "关键事件": 420,
+    "关联实体": 180,
+}
+LEGACY_SECTION_ORDER = ["作用", "参数", "返回值", "使用场景", "设计背景"]
+ALL_SECTION_HEADERS = DETAILED_SECTION_ORDER + LEGACY_SECTION_ORDER
 SECTION_PATTERN = re.compile(
-    r"^\s{0,3}(?:(?:#{1,6}|>)\s*)?(作用|参数|返回值|使用场景|设计背景)\s*[:：]?\s*(.*)$"
+    r"^\s{0,3}(?:(?:#{1,6}|>)\s*)?"
+    r"(核心作用|关键上下文|关键事件|关联实体|作用|参数|返回值|使用场景|设计背景)"
+    r"\s*[:：]?\s*(.*)$"
 )
+SENTENCE_PATTERN = re.compile(r"[^。！？!?；;]+[。！？!?；;]?")
 
 
 class ExplanationFormatter:
     """Parse structured LLM output with graceful fallback."""
 
-    def format(self, entity: CodeEntity, raw_output: str) -> EntityExplanation:
+    def format(
+        self,
+        entity: CodeEntity,
+        raw_output: str,
+        detail_level: str = "detailed",
+    ) -> EntityExplanation:
+        if detail_level == "summary":
+            return self._format_summary(entity, raw_output)
+        if detail_level == "trace":
+            return self._format_trace(entity, raw_output)
+        return self._format_detailed(entity, raw_output)
+
+    def _format_summary(self, entity: CodeEntity, raw_output: str) -> EntityExplanation:
         text = raw_output.strip()
         sections = self._extract_sections(text)
+        summary_source = (
+            sections.get("核心作用")
+            or sections.get("作用")
+            or text
+        )
+        return EntityExplanation(
+            entity_id=entity.entity_id,
+            entity_name=entity.name,
+            qualified_name=entity.qualified_name,
+            entity_type=entity.entity_type,
+            signature=entity.signature,
+            summary=self._format_summary_text(summary_source),
+            detailed_explanation=None,
+        )
 
-        if not sections:
+    def _format_detailed(self, entity: CodeEntity, raw_output: str) -> EntityExplanation:
+        text = raw_output.strip()
+        sections = self._extract_sections(text)
+        if self._has_new_sections(sections):
+            normalized_sections = self._normalize_detailed_sections(sections)
+            detailed_explanation = self._build_detailed_explanation(normalized_sections)
             return EntityExplanation(
                 entity_id=entity.entity_id,
                 entity_name=entity.name,
                 qualified_name=entity.qualified_name,
                 entity_type=entity.entity_type,
                 signature=entity.signature,
-                summary=self._fallback_summary(text),
-                detailed_explanation=text or None,
+                summary=self._format_summary_text(normalized_sections["核心作用"]),
+                detailed_explanation=detailed_explanation,
             )
 
-        effect = self._normalize_section(sections.get("作用"))
-        usage_context = self._normalize_section(sections.get("使用场景"))
-        design_background = self._normalize_section(sections.get("设计背景"))
-        return_explanation = self._normalize_section(sections.get("返回值"))
-        params = self._parse_params(self._normalize_section(sections.get("参数")))
+        if self._has_legacy_sections(sections):
+            return self._format_legacy_detailed(entity, text, sections)
 
         return EntityExplanation(
             entity_id=entity.entity_id,
@@ -43,8 +85,78 @@ class ExplanationFormatter:
             qualified_name=entity.qualified_name,
             entity_type=entity.entity_type,
             signature=entity.signature,
-            summary=self._summarize_effect(effect, text),
-            detailed_explanation=text or None,
+            summary=self._format_summary_text(text),
+            detailed_explanation=self._truncate_with_ellipsis(
+                self._normalize_inline_text(text),
+                DETAILED_MAX_CHARS,
+            )
+            or None,
+        )
+
+    def _format_trace(self, entity: CodeEntity, raw_output: str) -> EntityExplanation:
+        text = raw_output.strip()
+        sections = self._extract_sections(text)
+        if self._has_legacy_sections(sections):
+            effect = self._normalize_section(sections.get("作用"))
+            usage_context = self._normalize_section(sections.get("使用场景"))
+            design_background = self._normalize_section(sections.get("设计背景"))
+            return_explanation = self._normalize_section(sections.get("返回值"))
+            params = self._parse_params(self._normalize_section(sections.get("参数")))
+
+            return EntityExplanation(
+                entity_id=entity.entity_id,
+                entity_name=entity.name,
+                qualified_name=entity.qualified_name,
+                entity_type=entity.entity_type,
+                signature=entity.signature,
+                summary=self._format_summary_text(effect or text),
+                detailed_explanation=self._truncate_with_ellipsis(text, DETAILED_MAX_CHARS)
+                or None,
+                param_explanations=params,
+                return_explanation=return_explanation,
+                usage_context=usage_context,
+                creation_intent=design_background,
+            )
+
+        return EntityExplanation(
+            entity_id=entity.entity_id,
+            entity_name=entity.name,
+            qualified_name=entity.qualified_name,
+            entity_type=entity.entity_type,
+            signature=entity.signature,
+            summary=self._format_summary_text(text),
+            detailed_explanation=self._truncate_with_ellipsis(text, DETAILED_MAX_CHARS)
+            or None,
+        )
+
+    def _format_legacy_detailed(
+        self,
+        entity: CodeEntity,
+        raw_output: str,
+        sections: dict[str, str],
+    ) -> EntityExplanation:
+        effect = self._normalize_section(sections.get("作用"))
+        usage_context = self._normalize_section(sections.get("使用场景"))
+        design_background = self._normalize_section(sections.get("设计背景"))
+        return_explanation = self._normalize_section(sections.get("返回值"))
+        params = self._parse_params(self._normalize_section(sections.get("参数")))
+
+        normalized_sections = {
+            "核心作用": self._truncate_with_ellipsis(effect or "未提供。", 220),
+            "关键上下文": self._truncate_with_ellipsis(usage_context or "未提供。", 280),
+            "关键事件": self._normalize_bullet_section(design_background, 3, 420),
+            "关联实体": self._normalize_relation_section(None),
+        }
+        detailed_explanation = self._build_detailed_explanation(normalized_sections)
+
+        return EntityExplanation(
+            entity_id=entity.entity_id,
+            entity_name=entity.name,
+            qualified_name=entity.qualified_name,
+            entity_type=entity.entity_type,
+            signature=entity.signature,
+            summary=self._format_summary_text(effect or raw_output),
+            detailed_explanation=detailed_explanation,
             param_explanations=params,
             return_explanation=return_explanation,
             usage_context=usage_context,
@@ -73,6 +185,107 @@ class ExplanationFormatter:
             for key, value in sections.items()
             if "\n".join(value).strip()
         }
+
+    def _has_new_sections(self, sections: dict[str, str]) -> bool:
+        return any(header in sections for header in DETAILED_SECTION_ORDER)
+
+    def _has_legacy_sections(self, sections: dict[str, str]) -> bool:
+        return any(header in sections for header in LEGACY_SECTION_ORDER)
+
+    def _normalize_detailed_sections(self, sections: dict[str, str]) -> dict[str, str]:
+        return {
+            "核心作用": self._truncate_with_ellipsis(
+                self._normalize_inline_text(sections.get("核心作用") or "未提供。"),
+                DETAILED_SECTION_LIMITS["核心作用"],
+            ),
+            "关键上下文": self._truncate_with_ellipsis(
+                self._normalize_inline_text(sections.get("关键上下文") or "未提供。"),
+                DETAILED_SECTION_LIMITS["关键上下文"],
+            ),
+            "关键事件": self._normalize_bullet_section(
+                sections.get("关键事件"),
+                max_items=3,
+                max_chars=DETAILED_SECTION_LIMITS["关键事件"],
+            ),
+            "关联实体": self._normalize_relation_section(sections.get("关联实体")),
+        }
+
+    def _build_detailed_explanation(self, sections: dict[str, str]) -> str:
+        normalized = dict(sections)
+        text = self._join_detailed_sections(normalized)
+        if len(text) <= DETAILED_MAX_CHARS:
+            return text
+
+        overflow = len(text) - DETAILED_MAX_CHARS
+        for header in reversed(DETAILED_SECTION_ORDER):
+            body = normalized.get(header, "")
+            if not body:
+                continue
+            new_limit = max(len(body) - overflow, 4)
+            normalized[header] = self._truncate_with_ellipsis(body, new_limit)
+            break
+        return self._truncate_with_ellipsis(
+            self._join_detailed_sections(normalized),
+            DETAILED_MAX_CHARS,
+        )
+
+    def _join_detailed_sections(self, sections: dict[str, str]) -> str:
+        blocks = []
+        for header in DETAILED_SECTION_ORDER:
+            body = sections.get(header) or "未提供。"
+            blocks.append(f"{header}\n{body}")
+        return "\n\n".join(blocks)
+
+    def _normalize_bullet_section(
+        self,
+        text: Optional[str],
+        max_items: int,
+        max_chars: int,
+    ) -> str:
+        items = self._extract_bullet_items(text)
+        if not items:
+            return "未提供。"
+        lines = [f"- {item}" for item in items[:max_items]]
+        return self._truncate_with_ellipsis("\n".join(lines), max_chars)
+
+    def _normalize_relation_section(self, text: Optional[str]) -> str:
+        items = self._extract_bullet_items(text)
+        if not items:
+            return "未提供。"
+
+        normalized: list[str] = []
+        for item in items[:4]:
+            stripped = item.strip()
+            if stripped.startswith("caller:") or stripped.startswith("callee:"):
+                normalized.append(f"- {stripped}")
+            else:
+                normalized.append(f"- {stripped}")
+        return self._truncate_with_ellipsis(
+            "\n".join(normalized),
+            DETAILED_SECTION_LIMITS["关联实体"],
+        )
+
+    def _extract_bullet_items(self, text: Optional[str]) -> list[str]:
+        if not text:
+            return []
+
+        items: list[str] = []
+        for line in text.splitlines():
+            normalized = self._normalize_inline_text(line)
+            if not normalized:
+                continue
+            normalized = normalized.lstrip("-*").strip()
+            if not normalized:
+                continue
+            items.append(normalized)
+
+        if items:
+            return items
+
+        paragraph = self._normalize_inline_text(text)
+        if not paragraph:
+            return []
+        return [paragraph]
 
     def _parse_params(self, text: Optional[str]) -> Optional[dict[str, str]]:
         if not text:
@@ -117,7 +330,6 @@ class ExplanationFormatter:
                 current_parts.append(normalized)
 
         flush_current()
-
         return parsed or None
 
     def _normalize_param_name(self, name: str) -> str:
@@ -132,27 +344,37 @@ class ExplanationFormatter:
         normalized = text.strip()
         return normalized or None
 
-    def _summarize_effect(self, effect: Optional[str], fallback_text: str) -> str:
-        if effect:
-            first_line = next(
-                (line.strip() for line in effect.splitlines() if line.strip()),
-                "",
-            )
-            if first_line:
-                return self._truncate(first_line)
-        return self._fallback_summary(fallback_text)
-
-    def _fallback_summary(self, text: str) -> str:
-        stripped = text.strip()
-        if not stripped:
+    def _format_summary_text(self, text: str) -> str:
+        normalized = self._normalize_inline_text(text)
+        if not normalized:
             return "No explanation available."
-        first_paragraph = stripped.split("\n\n", 1)[0].replace("\n", " ").strip()
-        return self._truncate(first_paragraph)
 
-    def _truncate(self, text: str, max_length: int = 160) -> str:
-        if len(text) <= max_length:
-            return text
-        return f"{text[:max_length].rstrip()}..."
+        sentences = self._split_sentences(normalized)
+        candidate = "".join(sentences[:SUMMARY_MAX_SENTENCES]) if sentences else normalized
+        return self._truncate_with_ellipsis(candidate, SUMMARY_MAX_CHARS)
+
+    def _split_sentences(self, text: str) -> list[str]:
+        matches = [item.strip() for item in SENTENCE_PATTERN.findall(text) if item.strip()]
+        if matches:
+            return matches
+        return [text]
+
+    def _normalize_inline_text(self, text: Optional[str]) -> str:
+        if not text:
+            return ""
+        return re.sub(r"\s+", " ", text).strip()
+
+    def _truncate_with_ellipsis(self, text: str, max_length: int) -> str:
+        normalized = text.strip()
+        if len(normalized) <= max_length:
+            return normalized
+        if max_length <= 3:
+            return normalized[:max_length]
+        return f"{normalized[: max_length - 3].rstrip()}..."
 
 
-__all__ = ["ExplanationFormatter", "SECTION_ORDER"]
+__all__ = [
+    "DETAILED_SECTION_ORDER",
+    "ExplanationFormatter",
+    "LEGACY_SECTION_ORDER",
+]

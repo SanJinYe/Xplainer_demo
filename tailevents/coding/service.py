@@ -216,6 +216,25 @@ class CodingTaskService:
         session = self._require_session(task_id)
         return session.result
 
+    async def reset_all_sessions(self) -> int:
+        sessions = list(self._sessions.values())
+        self._sessions = {}
+
+        cancelled = 0
+        for session in sessions:
+            if session.done or session.cancelled:
+                continue
+            session.cancelled = True
+            if session.pending_tool and not session.pending_tool.future.done():
+                session.pending_tool.future.set_exception(
+                    CodingTaskCancelledError("Task cancelled by admin reset")
+                )
+                session.pending_tool = None
+            if session.worker is not None:
+                session.worker.cancel()
+            cancelled += 1
+        return cancelled
+
     async def _run_task(self, session: _TaskSession) -> None:
         try:
             await self._emit(session, "status", {"status": "running"})

@@ -8,7 +8,6 @@ __pycache__/
 *.db-wal
 .tmp/
 pytest-cache-files-*/
-NEXT_PHASE_TASK.md
 TEST_TUTORIAL.md
 CONTEXT.md
 CURRENT_PROGRESS.md
