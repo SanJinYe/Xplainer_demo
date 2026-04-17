@@ -13,6 +13,7 @@ from tailevents.config import Settings, get_settings
 from tailevents.explanation import (
     DocRetriever,
     ExplanationEngine,
+    ExplanationMetricsTracker,
     LLMClientFactory,
 )
 from tailevents.graph import GraphServiceStub
@@ -71,7 +72,7 @@ class AppContainer:
             return []
         return await self.event_store.get_batch(event_ids)
 
-    async def get_admin_stats(self) -> dict[str, float | int]:
+    async def get_admin_stats(self) -> dict[str, object]:
         """Aggregate counts for admin observability."""
 
         cache_stats = await self.cache.stats()
@@ -81,6 +82,7 @@ class AppContainer:
             ),
             "event_count": await self.event_store.count(),
             "relation_count": len(await self.relation_store.get_all_active()),
+            "explanation_metrics": self.explanation_engine.get_metrics(),
             **cache_stats,
         }
 
@@ -88,6 +90,7 @@ class AppContainer:
         """Invalidate all cached explanations and reset runtime metrics."""
 
         await self.cache.clear_all()
+        self.explanation_engine.reset_metrics()
         return await self.cache.stats()
 
     async def reset_state(self) -> dict[str, int]:
@@ -114,6 +117,7 @@ class AppContainer:
 
         self.indexer.pending_queue.clear()
         self.cache.reset_metrics()
+        self.explanation_engine.reset_metrics()
 
         return {
             "events_deleted": event_count,
@@ -182,6 +186,7 @@ class AppContainer:
             )
             await connection.commit()
         self.cache.reset_metrics()
+        self.explanation_engine.reset_metrics()
 
     async def _count_rows(self, table_name: str) -> int:
         async with self.db_manager.connection() as connection:
@@ -213,6 +218,7 @@ def build_lifespan(
         relation_store = SQLiteRelationStore(db_manager)
         task_step_store = SQLiteTaskStepStore(db_manager)
         cache = ExplanationCache(db_manager)
+        explanation_telemetry = ExplanationMetricsTracker()
         indexer = Indexer(
             entity_db=entity_db,
             relation_store=relation_store,
@@ -232,6 +238,13 @@ def build_lifespan(
             temperature=app_settings.explanation_temperature,
             cache_ttl=app_settings.cache_default_ttl,
             cache_enabled=app_settings.cache_enabled,
+            llm_backend_name=app_settings.llm_backend,
+            llm_model_name=_resolve_llm_model_name(app_settings),
+            detailed_concurrency=app_settings.explanation_detailed_concurrency,
+            stream_flush_chars=app_settings.explanation_stream_flush_chars,
+            stream_flush_ms=app_settings.explanation_stream_flush_ms,
+            stream_stall_timeout_ms=app_settings.explanation_stream_stall_timeout_ms,
+            telemetry=explanation_telemetry,
         )
         query_router = QueryRouter(
             entity_db=entity_db,
@@ -363,6 +376,17 @@ def get_coding_task_service(
     container: AppContainer = Depends(get_container),
 ) -> CodingTaskService:
     return container.coding_task_service
+
+
+def _resolve_llm_model_name(settings: Settings) -> str:
+    backend = settings.llm_backend.lower()
+    if backend == "ollama":
+        return settings.ollama_model
+    if backend == "claude":
+        return settings.claude_model
+    if backend == "openrouter":
+        return settings.openrouter_model
+    return ""
 
 
 __all__ = [

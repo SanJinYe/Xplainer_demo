@@ -18,7 +18,7 @@ async def reindex(
 @router.get("/stats")
 async def stats(
     container: AppContainer = Depends(get_container),
-) -> dict[str, float | int]:
+) -> dict[str, object]:
     return await container.get_admin_stats()
 
 

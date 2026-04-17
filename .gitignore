@@ -7,6 +7,7 @@ __pycache__/
 *.db-shm
 *.db-wal
 .tmp/
+.vscode/
 pytest-cache-files-*/
 AGENTS.md
 .codex/
@@ -20,6 +21,7 @@ regression_report.txt
 explanation_prompt_audit.md
 explanation_quality_check.md
 loadtest-results/
+powershell
 k6-summary-*.json
 pressure-report-*.json
 vscode-extension/*.vsix

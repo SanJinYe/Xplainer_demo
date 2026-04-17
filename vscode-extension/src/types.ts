@@ -205,6 +205,34 @@ export interface BackendEntityExplanation {
     confidence: number;
 }
 
+export interface BackendExplanationStreamInit {
+    event: "init";
+    entity_id: string;
+    entity_name: string;
+    qualified_name: string;
+    entity_type: string;
+    signature?: string | null;
+    file_path: string;
+    line_range?: LineRange | null;
+    event_count: number;
+    summary?: string | null;
+}
+
+export interface BackendExplanationStreamDelta {
+    event: "delta";
+    text: string;
+}
+
+export interface BackendExplanationStreamDone {
+    event: "done";
+    explanation: BackendEntityExplanation;
+}
+
+export interface BackendExplanationStreamError {
+    event: "error";
+    message: string;
+}
+
 export interface ApiSuccess<T> {
     ok: true;
     data: T;
@@ -252,10 +280,13 @@ export interface SidebarViewModel {
     lineStart: number | null;
     lineEnd: number | null;
     eventCount: number;
-    summary: string;
+    summary: string | null;
+    summaryPending: boolean;
     detailedExplanation?: string | null;
+    streamError?: string | null;
     timeline: TimelineItemViewModel[];
     historyAvailable: boolean;
+    historyLoading: boolean;
     relatedEntities: RelatedEntityViewModel[];
 }
 

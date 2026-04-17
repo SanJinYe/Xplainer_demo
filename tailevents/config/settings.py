@@ -38,6 +38,23 @@ class Settings(BaseSettings):
 
     explanation_max_events: int = defaults.DEFAULT_EXPLANATION_MAX_EVENTS
     explanation_temperature: float = defaults.DEFAULT_EXPLANATION_TEMPERATURE
+    explanation_detailed_concurrency: int = (
+        defaults.DEFAULT_EXPLANATION_DETAILED_CONCURRENCY
+    )
+    explanation_stream_flush_chars: int = defaults.DEFAULT_EXPLANATION_STREAM_FLUSH_CHARS
+    explanation_stream_flush_ms: int = defaults.DEFAULT_EXPLANATION_STREAM_FLUSH_MS
+    explanation_stream_stall_timeout_ms: int = (
+        defaults.DEFAULT_EXPLANATION_STREAM_STALL_TIMEOUT_MS
+    )
+
+    summary_backend: Optional[str] = defaults.DEFAULT_SUMMARY_BACKEND
+    summary_model: Optional[str] = defaults.DEFAULT_SUMMARY_MODEL
+    summary_max_tokens: Optional[int] = defaults.DEFAULT_SUMMARY_MAX_TOKENS
+    summary_timeout_ms: Optional[int] = defaults.DEFAULT_SUMMARY_TIMEOUT_MS
+    detailed_backend: Optional[str] = defaults.DEFAULT_DETAILED_BACKEND
+    detailed_model: Optional[str] = defaults.DEFAULT_DETAILED_MODEL
+    detailed_max_tokens: Optional[int] = defaults.DEFAULT_DETAILED_MAX_TOKENS
+    detailed_timeout_ms: Optional[int] = defaults.DEFAULT_DETAILED_TIMEOUT_MS
 
     model_config = SettingsConfigDict(
         env_file=".env",

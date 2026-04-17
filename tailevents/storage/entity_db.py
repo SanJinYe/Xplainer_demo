@@ -251,6 +251,32 @@ class SQLiteEntityDB(EntityDBProtocol):
                 raise RecordNotFoundError(f"Entity not found: {entity_id}")
             await connection.commit()
 
+    async def invalidate_description_and_cache_prefix(
+        self,
+        entity_id: str,
+        cache_prefix: str,
+    ) -> None:
+        async with self._database.connection() as connection:
+            cursor = await connection.execute(
+                """
+                UPDATE entities
+                SET description_valid = 0
+                WHERE entity_id = ?
+                """,
+                (entity_id,),
+            )
+            if cursor.rowcount == 0:
+                raise RecordNotFoundError(f"Entity not found: {entity_id}")
+            await connection.execute(
+                """
+                UPDATE explanation_cache
+                SET is_valid = 0
+                WHERE cache_key LIKE ?
+                """,
+                (f"{cache_prefix}%",),
+            )
+            await connection.commit()
+
     async def count(self) -> int:
         async with self._database.connection() as connection:
             row = await self._fetchone(

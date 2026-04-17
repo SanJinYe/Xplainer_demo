@@ -5,6 +5,8 @@ import {
     type BaselineOnboardFileResult,
     type BackendCodeEntity,
     type BackendEntityExplanation,
+    type BackendExplanationStreamDone,
+    type BackendExplanationStreamInit,
     type BackendTailEvent,
     type BackendTaskStepEvent,
     type BackendToolCallPayload,
@@ -35,6 +37,13 @@ export interface CodingTaskSessionHandlers {
     onResult?: (result: CodingTaskDraftResult) => void;
 }
 
+export interface ExplanationStreamHandlers {
+    onInit?: (payload: BackendExplanationStreamInit) => void;
+    onDelta?: (text: string) => void;
+    onDone?: (explanation: BackendEntityExplanation) => void;
+    onError?: (message: string) => void;
+}
+
 export interface TailEventsApi {
     getEntityByLocation(
         file: string,
@@ -53,6 +62,11 @@ export interface TailEventsApi {
         entityId: string,
         signal?: AbortSignal,
     ): Promise<ApiResult<BackendEntityExplanation>>;
+    streamExplanation(
+        entityId: string,
+        handlers: ExplanationStreamHandlers,
+        signal?: AbortSignal,
+    ): Promise<ApiResult<null>>;
     getEntityEvents(
         entityId: string,
         signal?: AbortSignal,
@@ -83,6 +97,7 @@ export interface TailEventsApi {
         handlers: CodingTaskSessionHandlers,
         signal?: AbortSignal,
     ): Promise<ApiResult<CodingTaskDraftResult>>;
+    clearSummaryCache(): void;
 }
 
 export class TailEventsApiClient implements TailEventsApi {
@@ -163,6 +178,52 @@ export class TailEventsApiClient implements TailEventsApi {
             undefined,
             signal,
         );
+    }
+
+    public async streamExplanation(
+        entityId: string,
+        handlers: ExplanationStreamHandlers,
+        signal?: AbortSignal,
+    ): Promise<ApiResult<null>> {
+        const url = this.buildUrl(
+            `/explain/${encodeURIComponent(entityId)}/stream`,
+            undefined,
+        );
+        const { signal: mergedSignal, cleanup } = this.buildMergedSignal(signal, false);
+
+        try {
+            const response = await this.fetchImpl(url, {
+                headers: {
+                    Accept: "text/event-stream",
+                },
+                method: "GET",
+                signal: mergedSignal,
+            });
+
+            if (!response.ok) {
+                return failure(classifyStatus(response.status), response.status);
+            }
+            if (!response.body) {
+                return failure("unknown", response.status, "stream_closed_unexpectedly");
+            }
+
+            const parsed = await this.consumeExplanationStream(
+                response.body,
+                handlers,
+            );
+            if (!parsed.ok) {
+                return failure(parsed.error, response.status, parsed.message);
+            }
+            return success(null, response.status);
+        } catch (error) {
+            const category = classifyFetchError(error, mergedSignal, signal);
+            if (!(signal?.aborted ?? false) && category !== "timeout") {
+                this.log(`[TailEvents] Explanation stream failed for ${url}: ${formatUnknownError(error)}`);
+            }
+            return failure(category, null);
+        } finally {
+            cleanup();
+        }
     }
 
     public async getEntityEvents(
@@ -304,6 +365,10 @@ export class TailEventsApiClient implements TailEventsApi {
         }
     }
 
+    public clearSummaryCache(): void {
+        this.summaryCache.clear();
+    }
+
     private async consumeCodingTaskStream(
         taskId: string,
         stream: ReadableStream<Uint8Array>,
@@ -399,6 +464,67 @@ export class TailEventsApiClient implements TailEventsApi {
             ok: false,
             error: "unknown",
             message: "Task stream ended before a done event was received.",
+        };
+    }
+
+    private async consumeExplanationStream(
+        stream: ReadableStream<Uint8Array>,
+        handlers: ExplanationStreamHandlers,
+    ): Promise<
+        | { ok: true }
+        | { ok: false; error: ApiErrorCategory; message?: string }
+    > {
+        const reader = stream.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+                break;
+            }
+            buffer += decoder.decode(value, { stream: true });
+            const blocks = buffer.split(/\r?\n\r?\n/);
+            buffer = blocks.pop() ?? "";
+
+            for (const block of blocks) {
+                const parsed = parseSseBlock(block);
+                if (!parsed) {
+                    continue;
+                }
+
+                if (parsed.event === "init" && isExplanationStreamInit(parsed.data)) {
+                    handlers.onInit?.(parsed.data);
+                    continue;
+                }
+
+                if (parsed.event === "delta" && typeof parsed.data?.text === "string") {
+                    handlers.onDelta?.(parsed.data.text);
+                    continue;
+                }
+
+                if (parsed.event === "done" && isExplanationStreamDone(parsed.data)) {
+                    handlers.onDone?.(parsed.data.explanation);
+                    return { ok: true };
+                }
+
+                if (parsed.event === "error") {
+                    const message = extractErrorMessage(parsed.data) ?? "stream_closed_unexpectedly";
+                    handlers.onError?.(message);
+                    return {
+                        ok: false,
+                        error: "unknown",
+                        message,
+                    };
+                }
+            }
+        }
+
+        handlers.onError?.("stream_closed_unexpectedly");
+        return {
+            ok: false,
+            error: "unknown",
+            message: "stream_closed_unexpectedly",
         };
     }
 
@@ -631,6 +757,29 @@ function isCodingTaskDraftResult(value: any): value is CodingTaskDraftResult {
         typeof value.session_id === "string" &&
         typeof value.agent_step_id === "string" &&
         value.action_type === "modify",
+    );
+}
+
+function isExplanationStreamInit(value: any): value is BackendExplanationStreamInit {
+    return Boolean(
+        value &&
+        value.event === "init" &&
+        typeof value.entity_id === "string" &&
+        typeof value.entity_name === "string" &&
+        typeof value.qualified_name === "string" &&
+        typeof value.entity_type === "string" &&
+        typeof value.file_path === "string" &&
+        typeof value.event_count === "number",
+    );
+}
+
+function isExplanationStreamDone(value: any): value is BackendExplanationStreamDone {
+    return Boolean(
+        value &&
+        value.event === "done" &&
+        value.explanation &&
+        typeof value.explanation.entity_id === "string" &&
+        typeof value.explanation.summary === "string",
     );
 }
 

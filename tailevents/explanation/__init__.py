@@ -18,6 +18,7 @@ from tailevents.explanation.llm_client import (
     OpenRouterLLMClient,
 )
 from tailevents.explanation.prompts import EXPLANATION_PROMPT_VERSION
+from tailevents.explanation.telemetry import ExplanationMetricsTracker
 
 __all__ = [
     "ClaudeLLMClient",
@@ -28,6 +29,7 @@ __all__ = [
     "ExplanationEngine",
     "ExplanationError",
     "ExplanationFormatter",
+    "ExplanationMetricsTracker",
     "InvalidDetailLevelError",
     "LLMClientError",
     "LLMClientFactory",

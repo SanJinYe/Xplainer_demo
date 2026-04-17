@@ -34,7 +34,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--scenario",
-        choices=["ingest", "hot-cache-explain", "mixed-workload"],
+        choices=["ingest", "summary", "hot-cache-explain", "mixed-workload"],
         required=True,
         help="Load test scenario to run.",
     )
@@ -572,6 +572,48 @@ async def seed_mixed_targets(
     }
 
 
+async def _resolve_entity_id_by_qname(
+    client: httpx.AsyncClient,
+    qualified_name: str,
+) -> str:
+    response = await client.get("entities/search", params={"q": qualified_name})
+    response.raise_for_status()
+    entities = response.json()
+    for entity in entities:
+        if entity.get("qualified_name") == qualified_name:
+            return str(entity["entity_id"])
+    if entities:
+        return str(entities[0]["entity_id"])
+    raise RuntimeError(f"unable to resolve entity id for {qualified_name}")
+
+
+async def seed_summary_targets(
+    client: httpx.AsyncClient,
+    target_count: int,
+) -> dict[str, Any]:
+    entity_ids: list[str] = []
+    seed_index = 0
+
+    while len(entity_ids) < target_count:
+        suffix = f"{seed_index:04d}"
+        session_id = f"summary-seed-{suffix}"
+        response = await client.post(
+            "events/batch",
+            json=make_seed_smoke_events(session_id, suffix),
+        )
+        response.raise_for_status()
+        names = build_seed_names(suffix)
+        entity_ids.append(
+            await _resolve_entity_id_by_qname(client, names["fetch_api_name"])
+        )
+        seed_index += 1
+
+    return {
+        "seed_count": seed_index,
+        "entity_ids": entity_ids,
+    }
+
+
 async def run_explain_request(
     client: httpx.AsyncClient,
     payload: dict[str, Any],
@@ -641,6 +683,18 @@ async def run_hot_cache_request(
     return await run_explain_request(client, payload)
 
 
+async def run_summary_request(
+    client: httpx.AsyncClient,
+    entity_id: str,
+) -> dict[str, Any]:
+    response = await client.get(f"explain/{entity_id}/summary")
+    from_cache = False
+    if response.headers.get("content-type", "").startswith("application/json"):
+        body = response.json()
+        from_cache = bool(body.get("from_cache"))
+    return build_response_result(response, operation="summary", from_cache=from_cache)
+
+
 async def run_entity_search_request(
     client: httpx.AsyncClient,
     query: str,
@@ -675,11 +729,22 @@ async def run_scenario(
             try:
                 if scenario == "ingest":
                     result = await run_ingest_request(client, index)
+                elif scenario == "summary":
+                    if payload is None:
+                        raise RuntimeError("summary scenario missing entity_ids payload")
+                    entity_ids = payload["entity_ids"]
+                    result = await run_summary_request(client, entity_ids[index])
                 else:
-                    assert payload is not None
+                    if payload is None:
+                        raise RuntimeError("scenario payload is missing")
                     result = await run_hot_cache_request(client, payload)
             except Exception as exc:  # noqa: BLE001
-                operation = "ingest" if scenario == "ingest" else "explain"
+                if scenario == "ingest":
+                    operation = "ingest"
+                elif scenario == "summary":
+                    operation = "summary"
+                else:
+                    operation = "explain"
                 result = build_failed_result(operation=operation, error=str(exc))
         latency_ms = (time.perf_counter() - start) * 1000
         latencies_ms.append(latency_ms)
@@ -943,15 +1008,21 @@ async def async_main() -> None:
                     "after_stats": after_stats,
                 }
             else:
-                if args.scenario == "hot-cache-explain":
+                scenario_payload: Optional[dict[str, Any]] = None
+                if args.scenario == "summary":
+                    target_count = max(args.seed_count, args.requests)
+                    setup = await seed_summary_targets(client, target_count)
+                    scenario_payload = setup
+                elif args.scenario == "hot-cache-explain":
                     setup = await warm_hot_cache(client)
+                    scenario_payload = setup["payload"]
 
                 result = await run_scenario(
                     client=client,
                     scenario=args.scenario,
                     request_count=args.requests,
                     concurrency=args.concurrency,
-                    payload=setup.get("payload"),
+                    payload=scenario_payload,
                 )
                 after_stats = await fetch_stats(client)
                 summary = {

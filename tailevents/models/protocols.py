@@ -5,7 +5,7 @@ from typing import AsyncIterator, Optional, Protocol, TYPE_CHECKING, runtime_che
 if TYPE_CHECKING:
     from tailevents.models.entity import CodeEntity
     from tailevents.models.event import EntityRef, TailEvent
-    from tailevents.models.explanation import EntityExplanation
+    from tailevents.models.explanation import EntityExplanation, ExplanationStreamEvent
     from tailevents.models.relation import Relation
     from tailevents.models.task import (
         CodingTaskCreateRequest,
@@ -101,6 +101,12 @@ class ExplanationEngineProtocol(Protocol):
         detail_level: str = "summary",
         include_relations: bool = False,
     ) -> "EntityExplanation": ...
+
+    async def stream_explain_entity(
+        self,
+        entity_id: str,
+        include_relations: bool = True,
+    ) -> AsyncIterator["ExplanationStreamEvent"]: ...
 
     async def explain_entities(
         self,

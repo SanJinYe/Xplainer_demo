@@ -1,7 +1,7 @@
 """Explanation request and response models."""
 
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -52,8 +52,57 @@ class ExplanationResponse(BaseModel):
     graph_context: Optional[dict] = None
 
 
+class ExplanationStreamInit(BaseModel):
+    """Initial stream payload for the explanation sidebar."""
+
+    event: Literal["init"] = "init"
+    entity_id: str
+    entity_name: str
+    qualified_name: str
+    entity_type: EntityType
+    signature: Optional[str] = None
+    file_path: str
+    line_range: Optional[tuple[int, int]] = None
+    event_count: int = 0
+    summary: Optional[str] = None
+
+
+class ExplanationStreamDelta(BaseModel):
+    """Incremental detailed explanation text."""
+
+    event: Literal["delta"] = "delta"
+    text: str
+
+
+class ExplanationStreamDone(BaseModel):
+    """Final completed explanation payload."""
+
+    event: Literal["done"] = "done"
+    explanation: EntityExplanation
+
+
+class ExplanationStreamError(BaseModel):
+    """Stream failure payload."""
+
+    event: Literal["error"] = "error"
+    message: str
+
+
+ExplanationStreamEvent = (
+    ExplanationStreamInit
+    | ExplanationStreamDelta
+    | ExplanationStreamDone
+    | ExplanationStreamError
+)
+
+
 __all__ = [
     "EntityExplanation",
     "ExplanationRequest",
     "ExplanationResponse",
+    "ExplanationStreamDelta",
+    "ExplanationStreamDone",
+    "ExplanationStreamError",
+    "ExplanationStreamEvent",
+    "ExplanationStreamInit",
 ]

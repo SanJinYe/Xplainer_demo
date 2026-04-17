@@ -5,12 +5,11 @@ import path from "node:path";
 import type * as vscode from "vscode";
 
 import type { CodingTaskSessionHandlers, TailEventsApi } from "./api-client";
-import { getFileLookupCandidates, toWorkspaceRelativePath } from "./path-utils";
+import { toWorkspaceRelativePath } from "./path-utils";
 import type {
-    ApiErrorCategory,
     ApiResult,
-    BackendCodeEntity,
     BackendEntityExplanation,
+    BackendExplanationStreamInit,
     BackendTailEvent,
     BackendTaskStepEvent,
     BackendToolCallPayload,
@@ -174,36 +173,84 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         };
         await this.postMessage(this.lastExplainState);
 
-        const [entityResult, explanationResult, eventsResult] = await Promise.all([
-            this.apiClient.getEntity(entityId, signal),
-            this.apiClient.getExplanationFull(entityId, signal),
-            this.apiClient.getEntityEvents(entityId, signal),
-        ]);
+        let viewModel: SidebarViewModel | null = null;
+        let eventsResult: ApiResult<BackendTailEvent[]> | null = null;
+        let receivedInit = false;
 
+        const postCurrentView = async (): Promise<void> => {
+            if (!viewModel || signal.aborted) {
+                return;
+            }
+            this.lastExplainState = {
+                type: "state:update",
+                data: viewModel,
+            };
+            await this.postMessage(this.lastExplainState);
+        };
+
+        const applyTimeline = (): void => {
+            if (!viewModel || !eventsResult) {
+                return;
+            }
+            viewModel.timeline = eventsResult.ok ? buildTimeline(eventsResult.data) : [];
+            viewModel.historyAvailable = eventsResult.ok;
+            viewModel.historyLoading = false;
+        };
+
+        const streamPromise = this.apiClient.streamExplanation(
+            entityId,
+            {
+                onInit: (payload) => {
+                    receivedInit = true;
+                    viewModel = buildInitialViewModel(payload);
+                    applyTimeline();
+                    void postCurrentView();
+                },
+                onDelta: (text) => {
+                    if (!viewModel) {
+                        return;
+                    }
+                    viewModel.detailedExplanation = `${viewModel.detailedExplanation ?? ""}${text}`;
+                    void postCurrentView();
+                },
+                onDone: (explanation) => {
+                    if (!viewModel) {
+                        return;
+                    }
+                    mergeFinalExplanation(viewModel, explanation);
+                    void postCurrentView();
+                },
+                onError: (message) => {
+                    if (!viewModel) {
+                        return;
+                    }
+                    viewModel.streamError = message;
+                    void postCurrentView();
+                },
+            },
+            signal,
+        );
+
+        const timelinePromise = this.apiClient.getEntityEvents(entityId, signal).then((result) => {
+            eventsResult = result;
+            applyTimeline();
+            return postCurrentView();
+        });
+
+        const [streamResult] = await Promise.all([streamPromise, timelinePromise]);
         if (signal.aborted) {
             return;
         }
 
-        if (!entityResult.ok || !explanationResult.ok) {
+        if (!streamResult.ok && !receivedInit) {
             this.lastExplainState = {
                 type: "state:error",
-                error: chooseError(entityResult, explanationResult),
+                error: streamResult.error,
                 baseUrl: normalizeBaseUrl(this.getBaseUrl()),
             };
             await this.postMessage(this.lastExplainState);
             return;
         }
-
-        const viewModel = buildViewModel(
-            entityResult.data,
-            explanationResult.data,
-            eventsResult,
-        );
-        this.lastExplainState = {
-            type: "state:update",
-            data: viewModel,
-        };
-        await this.postMessage(this.lastExplainState);
     }
 
     public async refreshCodeContext(): Promise<void> {
@@ -457,6 +504,8 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
             await this.setCodeState("error", formatTaskError(eventResult));
             return;
         }
+
+        this.apiClient.clearSummaryCache();
 
         const refreshResult = await this.apiClient.getEntityByLocation(
             this.currentTaskContext.workspaceFilePath,
@@ -726,38 +775,67 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
     }
 }
 
-function buildViewModel(
-    entity: BackendCodeEntity,
+function buildInitialViewModel(payload: BackendExplanationStreamInit): SidebarViewModel {
+    const [lineStart, lineEnd] = payload.line_range ?? [null, null];
+    const summary = typeof payload.summary === "string" && payload.summary.trim().length > 0
+        ? payload.summary
+        : null;
+
+    return {
+        entityId: payload.entity_id,
+        entityName: payload.entity_name,
+        entityType: payload.entity_type,
+        signature: payload.signature ?? null,
+        filePath: payload.file_path,
+        lineStart,
+        lineEnd,
+        eventCount: payload.event_count,
+        summary,
+        summaryPending: summary === null,
+        detailedExplanation: null,
+        streamError: null,
+        timeline: [],
+        historyAvailable: false,
+        historyLoading: true,
+        relatedEntities: [],
+    };
+}
+
+function mergeFinalExplanation(
+    viewModel: SidebarViewModel,
     explanation: BackendEntityExplanation,
-    eventsResult: ApiResult<BackendTailEvent[]>,
-): SidebarViewModel {
-    const [lineStart, lineEnd] = entity.line_range ?? [null, null];
-    const renameMap = new Map<string, string>();
-    for (const renameRecord of entity.rename_history) {
-        renameMap.set(
-            renameRecord.event_id,
-            `Renamed from ${renameRecord.old_qualified_name} to ${renameRecord.new_qualified_name}`,
-        );
-    }
+): void {
+    viewModel.entityName = explanation.entity_name || viewModel.entityName;
+    viewModel.entityType = explanation.entity_type || viewModel.entityType;
+    viewModel.signature = explanation.signature ?? viewModel.signature ?? null;
+    viewModel.summary = explanation.summary || viewModel.summary;
+    viewModel.summaryPending = false;
+    viewModel.detailedExplanation =
+        explanation.detailed_explanation ?? viewModel.detailedExplanation ?? null;
+    viewModel.relatedEntities = buildRelatedEntities(explanation);
+    viewModel.streamError = null;
+}
 
-    const timeline: TimelineItemViewModel[] = eventsResult.ok
-        ? [...eventsResult.data]
-            .sort((left, right) => {
-                return Date.parse(right.timestamp) - Date.parse(left.timestamp);
-            })
-            .map((event) => {
-                return {
-                    eventId: event.event_id,
-                    timestamp: event.timestamp,
-                    actionType: event.action_type,
-                    intent: event.intent,
-                    reasoning: event.reasoning ?? null,
-                    renameLabel: renameMap.get(event.event_id),
-                };
-            })
-        : [];
+function buildTimeline(events: BackendTailEvent[]): TimelineItemViewModel[] {
+    return [...events]
+        .sort((left, right) => {
+            return Date.parse(right.timestamp) - Date.parse(left.timestamp);
+        })
+        .map((event) => {
+            return {
+                eventId: event.event_id,
+                timestamp: event.timestamp,
+                actionType: event.action_type,
+                intent: event.intent,
+                reasoning: event.reasoning ?? null,
+            };
+        });
+}
 
-    const relatedEntities: RelatedEntityViewModel[] = explanation.related_entities.map((item) => {
+function buildRelatedEntities(
+    explanation: BackendEntityExplanation,
+): RelatedEntityViewModel[] {
+    return explanation.related_entities.map((item) => {
         const direction = typeof item.direction === "string" ? item.direction : "";
         const relationType = typeof item.relation_type === "string" ? item.relation_type : "";
         return {
@@ -768,35 +846,6 @@ function buildViewModel(
             direction,
         };
     });
-
-    return {
-        entityId: entity.entity_id,
-        entityName: explanation.entity_name || entity.name,
-        entityType: entity.entity_type,
-        signature: explanation.signature ?? entity.signature ?? null,
-        filePath: entity.file_path,
-        lineStart,
-        lineEnd,
-        eventCount: entity.event_refs.length,
-        summary: explanation.summary,
-        detailedExplanation: explanation.detailed_explanation ?? null,
-        timeline,
-        historyAvailable: eventsResult.ok,
-        relatedEntities,
-    };
-}
-
-function chooseError(
-    entityResult: ApiResult<BackendCodeEntity>,
-    explanationResult: ApiResult<BackendEntityExplanation>,
-): ApiErrorCategory {
-    if (!entityResult.ok) {
-        return entityResult.error;
-    }
-    if (!explanationResult.ok) {
-        return explanationResult.error;
-    }
-    return "unknown";
 }
 
 function validateDraftResult(

@@ -239,8 +239,10 @@
 
                 <section class="section">
                     <h3>Explanation</h3>
+                    <p id="summary-placeholder" class="muted hidden">正在生成摘要...</p>
                     <p id="summary-text" class="lead hidden"></p>
                     <p id="detail-text" class="text-block hidden"></p>
+                    <p id="stream-error" class="muted hidden"></p>
                 </section>
 
                 <section class="section">
@@ -449,11 +451,18 @@
             document.getElementById("event-count").textContent = `${data.eventCount} linked event(s)`;
             document.getElementById("summary-text").textContent = data.summary || "";
             document.getElementById("summary-text").classList.toggle("hidden", !data.summary);
+            document.getElementById("summary-placeholder").classList.toggle(
+                "hidden",
+                !data.summaryPending || Boolean(data.summary),
+            );
             document.getElementById("detail-text").textContent = data.detailedExplanation || "";
             document.getElementById("detail-text").classList.toggle("hidden", !data.detailedExplanation);
+            document.getElementById("stream-error").textContent = data.streamError || "";
+            document.getElementById("stream-error").classList.toggle("hidden", !data.streamError);
 
             const historyFallback = document.getElementById("history-fallback");
-            historyFallback.classList.toggle("hidden", data.historyAvailable);
+            historyFallback.classList.toggle("hidden", data.historyAvailable || data.historyLoading);
+            historyFallback.textContent = data.historyLoading ? "Loading history..." : "History unavailable.";
             const timelineList = document.getElementById("timeline-list");
             timelineList.replaceChildren();
             data.timeline.forEach((item) => {

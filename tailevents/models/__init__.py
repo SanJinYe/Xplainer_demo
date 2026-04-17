@@ -18,6 +18,11 @@ from tailevents.models.explanation import (
     EntityExplanation,
     ExplanationRequest,
     ExplanationResponse,
+    ExplanationStreamDelta,
+    ExplanationStreamDone,
+    ExplanationStreamError,
+    ExplanationStreamEvent,
+    ExplanationStreamInit,
 )
 from tailevents.models.protocols import (
     CacheProtocol,
@@ -67,6 +72,11 @@ __all__ = [
     "ExplanationEngineProtocol",
     "ExplanationRequest",
     "ExplanationResponse",
+    "ExplanationStreamDelta",
+    "ExplanationStreamDone",
+    "ExplanationStreamError",
+    "ExplanationStreamEvent",
+    "ExplanationStreamInit",
     "ExternalRef",
     "GraphServiceProtocol",
     "IndexerProtocol",

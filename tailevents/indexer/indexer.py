@@ -4,8 +4,6 @@ import ast
 from dataclasses import dataclass
 from typing import Optional
 
-from tailevents.explanation.prompts import EXPLANATION_PROMPT_VERSION
-from tailevents.models.enums import EntityRole
 from tailevents.models.event import TailEvent
 from tailevents.models.protocols import CacheProtocol, EntityDBProtocol, IndexerProtocol, RelationStoreProtocol
 from tailevents.indexer.ast_analyzer import ASTAnalyzer
@@ -121,12 +119,19 @@ class Indexer(IndexerProtocol):
         )
 
     async def _invalidate_cache(self, entity_ids: list[str]) -> None:
-        if self._cache is None:
-            return
         for entity_id in dict.fromkeys(entity_ids):
-            await self._cache.invalidate_prefix(
-                f"explain:{EXPLANATION_PROMPT_VERSION}:{entity_id}:"
+            cache_prefix = f"explain:{entity_id}:"
+            invalidate_combined = getattr(
+                self._entity_db,
+                "invalidate_description_and_cache_prefix",
+                None,
             )
+            if callable(invalidate_combined):
+                await invalidate_combined(entity_id, cache_prefix)
+                continue
+            if self._cache is not None:
+                await self._cache.invalidate_prefix(cache_prefix)
+            await self._entity_db.invalidate_description(entity_id)
 
     def _select_change(
         self, parsed_changes: list[dict], event_file_path: str

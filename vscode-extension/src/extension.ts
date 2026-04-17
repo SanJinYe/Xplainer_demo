@@ -189,6 +189,7 @@ export function activate(context: vscode.ExtensionContext): void {
                             });
                         },
                     });
+                    apiClient.clearSummaryCache();
                     const message = formatOnboardingSummary(summary);
                     if (summary.cancelled) {
                         vscode.window.showWarningMessage(message);
