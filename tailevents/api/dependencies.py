@@ -24,6 +24,7 @@ from tailevents.models.event import RawEvent, TailEvent
 from tailevents.models.protocols import DocRetrieverProtocol, LLMClientProtocol
 from tailevents.query import QueryRouter
 from tailevents.storage import (
+    SQLiteCodingTaskStore,
     SQLiteConnectionManager,
     SQLiteEntityDB,
     SQLiteEventStore,
@@ -42,6 +43,7 @@ class AppContainer:
     event_store: SQLiteEventStore
     entity_db: SQLiteEntityDB
     relation_store: SQLiteRelationStore
+    task_store: SQLiteCodingTaskStore
     task_step_store: SQLiteTaskStepStore
     cache: ExplanationCache
     indexer: Indexer
@@ -99,12 +101,14 @@ class AppContainer:
         entity_count = len(await self.entity_db.get_all())
         event_count = await self.event_store.count()
         relation_count = len(await self.relation_store.get_all_active())
+        task_count = await self._count_rows("coding_tasks")
         task_step_count = await self._count_rows("task_step_events")
         cancelled_tasks = await self.coding_task_service.reset_all_sessions()
 
         async with self.db_manager.connection() as connection:
             await connection.executescript(
                 """
+                DELETE FROM coding_tasks;
                 DELETE FROM task_step_events;
                 DELETE FROM relations;
                 DELETE FROM entity_search;
@@ -123,6 +127,7 @@ class AppContainer:
             "events_deleted": event_count,
             "entities_deleted": entity_count,
             "relations_deleted": relation_count,
+            "tasks_deleted": task_count,
             "task_steps_deleted": task_step_count,
             "cancelled_tasks": cancelled_tasks,
         }
@@ -216,6 +221,7 @@ def build_lifespan(
         event_store = SQLiteEventStore(db_manager)
         entity_db = SQLiteEntityDB(db_manager)
         relation_store = SQLiteRelationStore(db_manager)
+        task_store = SQLiteCodingTaskStore(db_manager)
         task_step_store = SQLiteTaskStepStore(db_manager)
         cache = ExplanationCache(db_manager)
         explanation_telemetry = ExplanationMetricsTracker()
@@ -262,6 +268,7 @@ def build_lifespan(
         )
         coding_task_service = CodingTaskService(
             llm_client=active_llm_client,
+            task_store=task_store,
             step_store=task_step_store,
         )
 
@@ -271,6 +278,7 @@ def build_lifespan(
             event_store=event_store,
             entity_db=entity_db,
             relation_store=relation_store,
+            task_store=task_store,
             task_step_store=task_step_store,
             cache=cache,
             indexer=indexer,
@@ -289,6 +297,7 @@ def build_lifespan(
         try:
             yield
         finally:
+            await container.coding_task_service.reset_all_sessions()
             await db_manager.close()
 
     return lifespan
@@ -328,6 +337,12 @@ def get_task_step_store(
     container: AppContainer = Depends(get_container),
 ) -> SQLiteTaskStepStore:
     return container.task_step_store
+
+
+def get_coding_task_store(
+    container: AppContainer = Depends(get_container),
+) -> SQLiteCodingTaskStore:
+    return container.task_store
 
 
 def get_indexer(
@@ -394,6 +409,7 @@ __all__ = [
     "get_baseline_onboarding_service",
     "build_lifespan",
     "get_cache",
+    "get_coding_task_store",
     "get_coding_task_service",
     "get_container",
     "get_entity_db",

@@ -7,6 +7,7 @@ It records structured change events, maps them to code entities with AST indexin
 - fast summaries for hover
 - streamed detailed explanations for the sidebar
 - baseline-aware explanation metadata and structured caller/callee context
+- persistent coding-task history with recent-task review and prompt/context reuse
 
 The current repository only keeps the implemented product surface. Design notes, plans, local progress logs, and tests stay out of version control.
 
@@ -23,6 +24,7 @@ The current repository only keeps the implemented product surface. Design notes,
 - Supports baseline onboarding for existing Python files
 - Exposes a minimal coding-task loop in the VS Code extension:
   `view -> edit -> verify -> Apply -> event`
+- Persists coding-task history with task status, transcript, model output, verified draft, and apply result
 
 ## Runtime Shape
 
@@ -57,6 +59,11 @@ Coding Agent / Baseline Onboarding
 - The backend drives a constrained tool loop
 - Only a verified draft can be applied
 - Accepted edits are written back as new events
+- Recent tasks can be reopened from the sidebar with:
+  - `Recent Tasks`
+  - `History Detail`
+  - `Reuse Prompt/Context`
+- Reusing history copies prompt/context only and does not switch the current target file automatically
 
 ### Baseline
 
@@ -74,7 +81,11 @@ Coding Agent / Baseline Onboarding
 - `GET /api/v1/explain/{entity_id}/stream`
 - `GET /api/v1/events/for-entity/{entity_id}`
 - `POST /api/v1/coding/tasks`
+- `GET /api/v1/coding/tasks/history`
+- `GET /api/v1/coding/tasks/{task_id}`
 - `GET /api/v1/coding/tasks/{task_id}/stream`
+- `POST /api/v1/coding/tasks/{task_id}/applied`
+- `POST /api/v1/coding/tasks/{task_id}/cancel`
 - `POST /api/v1/baseline/onboard-file`
 - `GET /api/v1/admin/stats`
 
@@ -122,6 +133,7 @@ For extension development, open the repo in VS Code and start the extension host
 
 - Python is the only indexed language today
 - Coding tasks are still single-file oriented
+- Task history is currently a recent-task workspace view with no pagination or replay flow
 - Graph analysis is still a stub
 - Container/member relation data is stored but not shown in the current UI
 - Streamed detailed explanation is implemented, but multi-model routing is only reserved in config and not enabled by default

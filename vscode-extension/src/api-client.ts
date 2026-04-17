@@ -4,12 +4,15 @@ import {
     type BaselineOnboardFilePayload,
     type BaselineOnboardFileResult,
     type BackendCodeEntity,
+    type BackendCodingTaskHistoryDetail,
+    type BackendCodingTaskHistoryItem,
     type BackendEntityExplanation,
     type BackendExplanationStreamDone,
     type BackendExplanationStreamInit,
     type BackendTailEvent,
     type BackendTaskStepEvent,
     type BackendToolCallPayload,
+    type CodingTaskAppliedPayload,
     type CodingTaskCreateRequestPayload,
     type CodingTaskCreateResponse,
     type CodingTaskDraftResult,
@@ -83,9 +86,22 @@ export interface TailEventsApi {
         payload: CodingTaskCreateRequestPayload,
         signal?: AbortSignal,
     ): Promise<ApiResult<CodingTaskCreateResponse>>;
+    getCodingTaskHistory(
+        limit?: number,
+        signal?: AbortSignal,
+    ): Promise<ApiResult<BackendCodingTaskHistoryItem[]>>;
+    getCodingTaskHistoryDetail(
+        taskId: string,
+        signal?: AbortSignal,
+    ): Promise<ApiResult<BackendCodingTaskHistoryDetail>>;
     submitCodingToolResult(
         taskId: string,
         payload: CodingTaskToolResultPayload,
+        signal?: AbortSignal,
+    ): Promise<ApiResult<null>>;
+    markCodingTaskApplied(
+        taskId: string,
+        payload: CodingTaskAppliedPayload,
         signal?: AbortSignal,
     ): Promise<ApiResult<null>>;
     cancelCodingTask(
@@ -297,6 +313,30 @@ export class TailEventsApiClient implements TailEventsApi {
         );
     }
 
+    public async getCodingTaskHistory(
+        limit = 20,
+        signal?: AbortSignal,
+    ): Promise<ApiResult<BackendCodingTaskHistoryItem[]>> {
+        return this.requestJson<BackendCodingTaskHistoryItem[]>(
+            "/coding/tasks/history",
+            {
+                limit: String(limit),
+            },
+            signal,
+        );
+    }
+
+    public async getCodingTaskHistoryDetail(
+        taskId: string,
+        signal?: AbortSignal,
+    ): Promise<ApiResult<BackendCodingTaskHistoryDetail>> {
+        return this.requestJson<BackendCodingTaskHistoryDetail>(
+            `/coding/tasks/${encodeURIComponent(taskId)}`,
+            undefined,
+            signal,
+        );
+    }
+
     public async cancelCodingTask(
         taskId: string,
         signal?: AbortSignal,
@@ -306,6 +346,21 @@ export class TailEventsApiClient implements TailEventsApi {
             signal,
             {
                 method: "POST",
+            },
+        );
+    }
+
+    public async markCodingTaskApplied(
+        taskId: string,
+        payload: CodingTaskAppliedPayload,
+        signal?: AbortSignal,
+    ): Promise<ApiResult<null>> {
+        return this.requestNoContent(
+            `/coding/tasks/${encodeURIComponent(taskId)}/applied`,
+            signal,
+            {
+                method: "POST",
+                body: payload,
             },
         );
     }

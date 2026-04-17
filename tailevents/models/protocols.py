@@ -8,9 +8,13 @@ if TYPE_CHECKING:
     from tailevents.models.explanation import EntityExplanation, ExplanationStreamEvent
     from tailevents.models.relation import Relation
     from tailevents.models.task import (
+        CodingTaskAppliedRequest,
         CodingTaskCreateRequest,
         CodingTaskCreateResponse,
         CodingTaskDraftResult,
+        CodingTaskHistoryDetail,
+        CodingTaskHistoryItem,
+        CodingTaskRecord,
         CodingTaskToolResultRequest,
         TaskStepEvent,
     )
@@ -174,6 +178,15 @@ class TaskStepStoreProtocol(Protocol):
 
 
 @runtime_checkable
+class CodingTaskStoreProtocol(Protocol):
+    async def put(self, record: "CodingTaskRecord") -> None: ...
+
+    async def get(self, task_id: str) -> Optional["CodingTaskRecord"]: ...
+
+    async def list_recent(self, limit: int = 20) -> list["CodingTaskRecord"]: ...
+
+
+@runtime_checkable
 class CodingTaskServiceProtocol(Protocol):
     async def create_task(
         self,
@@ -192,9 +205,20 @@ class CodingTaskServiceProtocol(Protocol):
 
     async def get_result(self, task_id: str) -> Optional["CodingTaskDraftResult"]: ...
 
+    async def list_history(self, limit: int = 20) -> list["CodingTaskHistoryItem"]: ...
+
+    async def get_history_detail(self, task_id: str) -> "CodingTaskHistoryDetail": ...
+
+    async def mark_applied(
+        self,
+        task_id: str,
+        request: "CodingTaskAppliedRequest",
+    ) -> None: ...
+
 
 __all__ = [
     "CacheProtocol",
+    "CodingTaskStoreProtocol",
     "CodingTaskServiceProtocol",
     "DocRetrieverProtocol",
     "EntityDBProtocol",

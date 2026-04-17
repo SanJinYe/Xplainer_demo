@@ -109,6 +109,29 @@ CREATE TABLE IF NOT EXISTS explanation_cache (
 );
 """
 
+CODING_TASKS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS coding_tasks (
+    task_id TEXT PRIMARY KEY,
+    target_file_path TEXT NOT NULL,
+    user_prompt TEXT NOT NULL,
+    context_files TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    model_output_text TEXT,
+    verified_draft_content TEXT,
+    intent TEXT,
+    reasoning TEXT,
+    last_error TEXT,
+    applied_event_id TEXT
+);
+"""
+
+CODING_TASKS_INDEXES_SQL = """
+CREATE INDEX IF NOT EXISTS idx_coding_tasks_updated_at ON coding_tasks(updated_at);
+CREATE INDEX IF NOT EXISTS idx_coding_tasks_target_file ON coding_tasks(target_file_path);
+"""
+
 TASK_STEP_EVENTS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS task_step_events (
     task_id TEXT NOT NULL,
@@ -141,6 +164,8 @@ SCHEMA_SQL = "\n".join(
         RELATIONS_TABLE_SQL,
         RELATIONS_INDEXES_SQL,
         EXPLANATION_CACHE_TABLE_SQL,
+        CODING_TASKS_TABLE_SQL,
+        CODING_TASKS_INDEXES_SQL,
         TASK_STEP_EVENTS_TABLE_SQL,
         TASK_STEP_EVENTS_INDEXES_SQL,
     ]
@@ -160,6 +185,8 @@ __all__ = [
     "ENTITIES_TABLE_SQL",
     "EVENTS_INDEXES_SQL",
     "EVENTS_TABLE_SQL",
+    "CODING_TASKS_INDEXES_SQL",
+    "CODING_TASKS_TABLE_SQL",
     "EXPLANATION_CACHE_TABLE_SQL",
     "TASK_STEP_EVENTS_INDEXES_SQL",
     "TASK_STEP_EVENTS_TABLE_SQL",

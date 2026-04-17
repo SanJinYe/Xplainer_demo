@@ -14,8 +14,11 @@ from tailevents.coding import (
     CodingTaskValidationError,
 )
 from tailevents.models.task import (
+    CodingTaskAppliedRequest,
     CodingTaskCreateRequest,
     CodingTaskCreateResponse,
+    CodingTaskHistoryDetail,
+    CodingTaskHistoryItem,
     CodingTaskToolResultRequest,
 )
 
@@ -34,6 +37,14 @@ async def create_coding_task(
         raise HTTPException(status_code=422, detail=str(error)) from error
 
 
+@router.get("/history", response_model=list[CodingTaskHistoryItem])
+async def list_coding_task_history(
+    limit: int = 20,
+    service: CodingTaskService = Depends(get_coding_task_service),
+) -> list[CodingTaskHistoryItem]:
+    return await service.list_history(limit=limit)
+
+
 @router.get("/{task_id}/stream")
 async def stream_coding_task(
     task_id: str,
@@ -50,6 +61,17 @@ async def stream_coding_task(
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
+@router.get("/{task_id}", response_model=CodingTaskHistoryDetail)
+async def get_coding_task_history_detail(
+    task_id: str,
+    service: CodingTaskService = Depends(get_coding_task_service),
+) -> CodingTaskHistoryDetail:
+    try:
+        return await service.get_history_detail(task_id)
+    except CodingTaskNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
 @router.post("/{task_id}/tool-result", status_code=status.HTTP_204_NO_CONTENT)
 async def submit_tool_result(
     task_id: str,
@@ -62,6 +84,20 @@ async def submit_tool_result(
         raise HTTPException(status_code=404, detail=str(error)) from error
     except CodingTaskConflictError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
+    except CodingTaskValidationError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@router.post("/{task_id}/applied", status_code=status.HTTP_204_NO_CONTENT)
+async def mark_coding_task_applied(
+    task_id: str,
+    request: CodingTaskAppliedRequest,
+    service: CodingTaskService = Depends(get_coding_task_service),
+) -> None:
+    try:
+        await service.mark_applied(task_id, request)
+    except CodingTaskNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
     except CodingTaskValidationError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 

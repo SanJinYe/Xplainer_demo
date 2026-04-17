@@ -122,13 +122,12 @@ export class TailEventsHoverProvider implements vscode.HoverProvider {
             summaryResult.ok &&
             summaryResult.data.history_source === "baseline_only"
         ) {
-            markdown.appendMarkdown("`基线` ");
+            markdown.appendMarkdown("`基线`\n\n");
         }
 
         if (entity.signature) {
-            markdown.appendMarkdown("`");
-            markdown.appendText(entity.signature);
-            markdown.appendMarkdown("`\n\n");
+            markdown.appendCodeblock(entity.signature, "python");
+            markdown.appendMarkdown("\n\n");
         }
 
         if (summaryResult && summaryResult.ok && summaryResult.data.summary.trim().length > 0) {

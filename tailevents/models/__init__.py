@@ -31,6 +31,7 @@ from tailevents.models.explanation import (
 )
 from tailevents.models.protocols import (
     CacheProtocol,
+    CodingTaskStoreProtocol,
     CodingTaskServiceProtocol,
     DocRetrieverProtocol,
     EntityDBProtocol,
@@ -45,10 +46,15 @@ from tailevents.models.protocols import (
 )
 from tailevents.models.relation import Relation
 from tailevents.models.task import (
+    CodingTaskAppliedRequest,
     CodingTaskCreateRequest,
     CodingTaskCreateResponse,
     CodingTaskDraftResult,
     CodingTaskEdit,
+    CodingTaskHistoryDetail,
+    CodingTaskHistoryItem,
+    CodingTaskHistoryStatus,
+    CodingTaskRecord,
     CodingTaskToolResultRequest,
     TaskStepEvent,
     ToolCallPayload,
@@ -59,10 +65,16 @@ __all__ = [
     "BaselineOnboardFileRequest",
     "BaselineOnboardFileResponse",
     "CacheProtocol",
+    "CodingTaskAppliedRequest",
     "CodingTaskCreateRequest",
     "CodingTaskCreateResponse",
     "CodingTaskDraftResult",
     "CodingTaskEdit",
+    "CodingTaskHistoryDetail",
+    "CodingTaskHistoryItem",
+    "CodingTaskHistoryStatus",
+    "CodingTaskRecord",
+    "CodingTaskStoreProtocol",
     "CodingTaskServiceProtocol",
     "CodingTaskToolResultRequest",
     "CodeEntity",

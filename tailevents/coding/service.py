@@ -2,6 +2,7 @@
 
 import ast
 import asyncio
+from datetime import datetime
 import hashlib
 import json
 import re
@@ -16,12 +17,20 @@ from tailevents.coding.exceptions import (
     CodingTaskNotFoundError,
     CodingTaskValidationError,
 )
-from tailevents.models.protocols import LLMClientProtocol, TaskStepStoreProtocol
+from tailevents.models.protocols import (
+    CodingTaskStoreProtocol,
+    LLMClientProtocol,
+    TaskStepStoreProtocol,
+)
 from tailevents.models.task import (
+    CodingTaskAppliedRequest,
     CodingTaskCreateRequest,
     CodingTaskCreateResponse,
     CodingTaskDraftResult,
     CodingTaskEdit,
+    CodingTaskHistoryDetail,
+    CodingTaskHistoryItem,
+    CodingTaskRecord,
     CodingTaskToolResultRequest,
     TaskStepEvent,
     ToolCallPayload,
@@ -111,12 +120,15 @@ class _StreamEvent:
 class _TaskSession:
     task_id: str
     request: CodingTaskCreateRequest
+    record: CodingTaskRecord
     allowed_files: set[str]
     events: list[_StreamEvent] = field(default_factory=list)
     condition: asyncio.Condition = field(default_factory=asyncio.Condition)
     pending_tool: Optional[_PendingToolRequest] = None
     worker: Optional[asyncio.Task] = None
     result: Optional[CodingTaskDraftResult] = None
+    model_output_text: str = ""
+    edit_attempts: int = 0
     done: bool = False
     cancelled: bool = False
 
@@ -127,9 +139,11 @@ class CodingTaskService:
     def __init__(
         self,
         llm_client: LLMClientProtocol,
+        task_store: CodingTaskStoreProtocol,
         step_store: TaskStepStoreProtocol,
     ):
         self._llm_client = llm_client
+        self._task_store = task_store
         self._step_store = step_store
         self._sessions: dict[str, _TaskSession] = {}
 
@@ -139,9 +153,18 @@ class CodingTaskService:
     ) -> CodingTaskCreateResponse:
         self._validate_request(request)
         task_id = new_task_id()
+        record = CodingTaskRecord(
+            task_id=task_id,
+            target_file_path=request.target_file_path,
+            user_prompt=request.user_prompt,
+            context_files=request.context_files,
+            status="created",
+        )
+        await self._task_store.put(record)
         session = _TaskSession(
             task_id=task_id,
             request=request,
+            record=record,
             allowed_files={request.target_file_path, *request.context_files},
         )
         self._sessions[task_id] = session
@@ -216,11 +239,64 @@ class CodingTaskService:
         session = self._require_session(task_id)
         return session.result
 
+    async def list_history(self, limit: int = 20) -> list[CodingTaskHistoryItem]:
+        records = await self._task_store.list_recent(limit=limit)
+        return [
+            CodingTaskHistoryItem(
+                task_id=record.task_id,
+                target_file_path=record.target_file_path,
+                status=record.status,
+                created_at=record.created_at,
+                updated_at=record.updated_at,
+            )
+            for record in records
+        ]
+
+    async def get_history_detail(self, task_id: str) -> CodingTaskHistoryDetail:
+        record = await self._require_task_record(task_id)
+        steps = await self._step_store.get_by_task(task_id)
+        return CodingTaskHistoryDetail(
+            task_id=record.task_id,
+            target_file_path=record.target_file_path,
+            user_prompt=record.user_prompt,
+            context_files=record.context_files,
+            status=record.status,
+            created_at=record.created_at,
+            updated_at=record.updated_at,
+            steps=steps,
+            model_output_text=record.model_output_text,
+            verified_draft_content=record.verified_draft_content,
+            intent=record.intent,
+            reasoning=record.reasoning,
+            last_error=record.last_error,
+            applied_event_id=record.applied_event_id,
+        )
+
+    async def mark_applied(
+        self,
+        task_id: str,
+        request: CodingTaskAppliedRequest,
+    ) -> None:
+        record = await self._require_task_record(task_id)
+        updated = record.model_copy(
+            update={
+                "status": "applied",
+                "applied_event_id": request.event_id,
+                "last_error": None,
+                "updated_at": datetime.utcnow(),
+            }
+        )
+        await self._task_store.put(updated)
+        session = self._sessions.get(task_id)
+        if session is not None:
+            session.record = updated
+
     async def reset_all_sessions(self) -> int:
         sessions = list(self._sessions.values())
         self._sessions = {}
 
         cancelled = 0
+        pending_workers: list[asyncio.Task] = []
         for session in sessions:
             if session.done or session.cancelled:
                 continue
@@ -232,11 +308,19 @@ class CodingTaskService:
                 session.pending_tool = None
             if session.worker is not None:
                 session.worker.cancel()
+                pending_workers.append(session.worker)
             cancelled += 1
+        if pending_workers:
+            await asyncio.gather(*pending_workers, return_exceptions=True)
         return cancelled
 
     async def _run_task(self, session: _TaskSession) -> None:
         try:
+            await self._update_task_record(
+                session,
+                status="running",
+                last_error=None,
+            )
             await self._emit(session, "status", {"status": "running"})
 
             target_view = await self._request_view(
@@ -280,6 +364,14 @@ class CodingTaskService:
                         session_id=session.task_id,
                         agent_step_id=verify_step_id or edit_step_id,
                     )
+                    await self._update_task_record(
+                        session,
+                        status="ready_to_apply",
+                        verified_draft_content=draft_content,
+                        intent=plan.intent,
+                        reasoning=plan.reasoning,
+                        last_error=None,
+                    )
                     await self._emit(session, "result", session.result.model_dump(mode="json"))
                     await self._emit(session, "status", {"status": "ready_to_apply"})
                     break
@@ -301,10 +393,25 @@ class CodingTaskService:
                         initial_hash=initial_hash,
                     )
         except CodingTaskCancelledError:
+            await self._update_task_record(
+                session,
+                status="cancelled",
+                last_error="Task cancelled",
+            )
             await self._emit(session, "status", {"status": "cancelled"})
         except asyncio.CancelledError:
+            await self._update_task_record(
+                session,
+                status="cancelled",
+                last_error="Task cancelled",
+            )
             await self._emit(session, "status", {"status": "cancelled"})
         except Exception as error:
+            await self._update_task_record(
+                session,
+                status="failed",
+                last_error=str(error),
+            )
             await self._emit(session, "error", {"message": str(error)})
             await self._emit(session, "status", {"status": "failed"})
         finally:
@@ -321,6 +428,7 @@ class CodingTaskService:
         failure_hint: Optional[str],
     ) -> tuple[_EditPlan, str, str]:
         step_id = new_step_id()
+        attempt_number = self._next_edit_attempt(session)
         started = TaskStepEvent(
             task_id=session.task_id,
             step_id=step_id,
@@ -337,6 +445,7 @@ class CodingTaskService:
 
         try:
             raw_output = ""
+            captured_output = False
             async for chunk in self._llm_client.stream_generate(
                 system_prompt=SYSTEM_PROMPT,
                 user_prompt=self._build_user_prompt(
@@ -356,11 +465,15 @@ class CodingTaskService:
                     "model_delta",
                     {"text": chunk},
                 )
+            await self._capture_model_output(session, attempt_number, raw_output)
+            captured_output = True
             plan = self._parse_edit_plan(raw_output)
             draft_content = self._apply_edits(target_view.content, plan.edits)
             if draft_content == target_view.content:
                 raise CodingTaskValidationError("Edit plan did not change the target file")
         except Exception as error:
+            if not captured_output:
+                await self._capture_model_output(session, attempt_number, raw_output)
             await self._record_step(
                 session,
                 TaskStepEvent(
@@ -535,6 +648,31 @@ class CodingTaskService:
         await self._step_store.put(event)
         await self._emit(session, "step", event.model_dump(mode="json"))
 
+    async def _update_task_record(self, session: _TaskSession, **changes: object) -> None:
+        session.record = session.record.model_copy(
+            update={
+                **changes,
+                "updated_at": datetime.utcnow(),
+            }
+        )
+        await self._task_store.put(session.record)
+
+    async def _capture_model_output(
+        self,
+        session: _TaskSession,
+        attempt_number: int,
+        raw_output: str,
+    ) -> None:
+        attempt_block = f"--- attempt {attempt_number} ---\n{raw_output}".rstrip()
+        if session.model_output_text:
+            session.model_output_text = f"{session.model_output_text}\n{attempt_block}"
+        else:
+            session.model_output_text = attempt_block
+        await self._update_task_record(
+            session,
+            model_output_text=session.model_output_text,
+        )
+
     async def _emit(
         self,
         session: _TaskSession,
@@ -677,6 +815,16 @@ class CodingTaskService:
         if session is None:
             raise CodingTaskNotFoundError(f"Task not found: {task_id}")
         return session
+
+    async def _require_task_record(self, task_id: str) -> CodingTaskRecord:
+        record = await self._task_store.get(task_id)
+        if record is None:
+            raise CodingTaskNotFoundError(f"Task not found: {task_id}")
+        return record
+
+    def _next_edit_attempt(self, session: _TaskSession) -> int:
+        session.edit_attempts += 1
+        return session.edit_attempts
 
     def _hash_content(self, content: str) -> str:
         return hashlib.sha256(content.encode("utf-8")).hexdigest()

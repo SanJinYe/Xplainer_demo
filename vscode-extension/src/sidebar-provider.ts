@@ -8,6 +8,7 @@ import type { CodingTaskSessionHandlers, TailEventsApi } from "./api-client";
 import { toWorkspaceRelativePath } from "./path-utils";
 import type {
     ApiResult,
+    BackendCodingTaskHistoryDetail,
     BackendEntityExplanation,
     BackendExplanationStreamInit,
     BackendTailEvent,
@@ -15,6 +16,8 @@ import type {
     BackendToolCallPayload,
     CodeTaskStatus,
     CodeViewModel,
+    CodingTaskHistoryDetailViewModel,
+    CodingTaskHistoryItemViewModel,
     CodingTaskDraftResult,
     CodingTaskToolResultPayload,
     CreateRawEventPayload,
@@ -46,6 +49,12 @@ const APPLY_SUCCESS_MESSAGE = "File updated and event written.";
 const APPLY_SUCCESS_NO_ENTITY_MESSAGE = "File updated and event written. Re-run explain if needed.";
 const FILE_CHANGED_MESSAGE = "The file changed after generation. Please run again.";
 const APPLY_FAILED_MESSAGE = "Failed to apply the verified draft. Please run again.";
+const APPLY_HISTORY_FAILED_MESSAGE =
+    "File updated and event written, but task history could not be updated.";
+const HISTORY_REUSED_MESSAGE = "Prompt and context files copied from task history.";
+const HISTORY_REUSED_TARGET_MISMATCH_MESSAGE =
+    "Prompt and context files copied from task history. The current target file was not changed.";
+const HISTORY_LOAD_FAILED_MESSAGE = "Failed to load recent task history.";
 const BASELINE_ONLY_DISCLAIMER =
     "此解释基于已有代码的基线扫描，不是真实 agent 会话中的创建/修改历史";
 const MIXED_DISCLAIMER = "此解释同时包含基线扫描与真实 agent 会话记录";
@@ -119,6 +128,8 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
 
     private currentTaskAbortController: AbortController | null = null;
 
+    private currentHistoryAbortController: AbortController | null = null;
+
     private currentTaskContext: TaskContext | null = null;
 
     private currentTaskResult: CodingTaskDraftResult | null = null;
@@ -132,6 +143,18 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
     private codeDraftText = "";
 
     private codeMessage: string | null = null;
+
+    private codeHistoryLoading = false;
+
+    private codeHistoryError: string | null = null;
+
+    private codeHistoryNotice: string | null = null;
+
+    private codeHistoryItems: CodingTaskHistoryItemViewModel[] = [];
+
+    private codeHistoryDetail: CodingTaskHistoryDetailViewModel | null = null;
+
+    private selectedHistoryTaskId: string | null = null;
 
     private codeModelAttempt = 0;
 
@@ -267,6 +290,9 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
             mode: this.currentMode,
         });
         await this.postCodeState();
+        if (mode === "code") {
+            void this.refreshHistory();
+        }
     }
 
     private cancelPendingExplain(): AbortSignal {
@@ -285,6 +311,7 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
                     mode: this.currentMode,
                 });
                 await this.postCodeState();
+                void this.refreshHistory();
                 await this.postMessage(this.lastExplainState);
                 return;
             case "refresh":
@@ -314,6 +341,13 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
                 return;
             case "applyTask":
                 await this.applyTask();
+                return;
+            case "selectHistoryTask":
+                this.selectedHistoryTaskId = message.taskId;
+                await this.refreshHistory(message.taskId);
+                return;
+            case "reuseHistoryTask":
+                await this.reuseHistoryTask(message.taskId);
                 return;
             default:
                 return;
@@ -359,6 +393,7 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         this.codeModelOutputText = "";
         this.codeDraftText = "";
         this.codeModelAttempt = 0;
+        this.codeHistoryNotice = null;
         await this.setCodeState("running", TASK_RUNNING_MESSAGE);
 
         const handlers: CodingTaskSessionHandlers = {
@@ -418,6 +453,7 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         if (!result.ok) {
             this.currentTaskResult = null;
             await this.setCodeState("error", formatTaskError(result));
+            await this.refreshHistory(this.selectedHistoryTaskId);
             return;
         }
 
@@ -428,12 +464,14 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         if (validationError) {
             this.currentTaskResult = null;
             await this.setCodeState("error", validationError);
+            await this.refreshHistory(this.selectedHistoryTaskId);
             return;
         }
 
         this.currentTaskResult = result.data;
         this.codeDraftText = result.data.updated_file_content;
         await this.setCodeState("ready_to_apply", TASK_READY_MESSAGE);
+        await this.refreshHistory(result.data.task_id);
     }
 
     private async cancelTask(): Promise<void> {
@@ -443,12 +481,13 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
 
         const taskId = this.currentTaskContext?.taskId;
         if (taskId) {
-            void this.apiClient.cancelCodingTask(taskId);
+            await this.apiClient.cancelCodingTask(taskId);
         }
 
         this.currentTaskResult = null;
         this.codeDraftText = "";
         await this.setCodeState("idle", TASK_CANCELLED_MESSAGE);
+        await this.refreshHistory(taskId ?? this.selectedHistoryTaskId);
     }
 
     private async applyTask(): Promise<void> {
@@ -509,11 +548,26 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         }
 
         this.apiClient.clearSummaryCache();
+        const appliedResult = await this.apiClient.markCodingTaskApplied(
+            this.currentTaskResult.task_id,
+            {
+                event_id: eventResult.data.event_id,
+            },
+        );
+        await this.refreshHistory(this.currentTaskResult.task_id);
 
         const refreshResult = await this.apiClient.getEntityByLocation(
             this.currentTaskContext.workspaceFilePath,
             this.currentTaskContext.lineNumber,
         );
+
+        if (!appliedResult.ok) {
+            if (refreshResult.ok) {
+                await this.loadEntity(refreshResult.data.entity_id);
+            }
+            await this.setCodeState("error", APPLY_HISTORY_FAILED_MESSAGE);
+            return;
+        }
 
         if (refreshResult.ok) {
             await this.loadEntity(refreshResult.data.entity_id);
@@ -522,6 +576,98 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         }
 
         await this.setCodeState("applied", APPLY_SUCCESS_NO_ENTITY_MESSAGE);
+    }
+
+    private async refreshHistory(preferredTaskId?: string | null): Promise<void> {
+        this.currentHistoryAbortController?.abort();
+        const controller = new AbortController();
+        this.currentHistoryAbortController = controller;
+        this.codeHistoryLoading = true;
+        this.codeHistoryError = null;
+        await this.postCodeState();
+
+        const historyResult = await this.apiClient.getCodingTaskHistory(20, controller.signal);
+        if (this.currentHistoryAbortController !== controller || controller.signal.aborted) {
+            return;
+        }
+
+        if (!historyResult.ok) {
+            this.codeHistoryLoading = false;
+            this.codeHistoryError = HISTORY_LOAD_FAILED_MESSAGE;
+            await this.postCodeState();
+            return;
+        }
+
+        const selectedTaskId = this.resolveSelectedHistoryTaskId(
+            historyResult.data,
+            preferredTaskId,
+        );
+        this.selectedHistoryTaskId = selectedTaskId;
+        this.codeHistoryItems = historyResult.data.map((item) => {
+            return {
+                taskId: item.task_id,
+                targetFilePath: item.target_file_path,
+                status: item.status,
+                createdAt: item.created_at,
+                updatedAt: item.updated_at,
+                selected: item.task_id === selectedTaskId,
+            };
+        });
+
+        if (!selectedTaskId) {
+            this.codeHistoryLoading = false;
+            this.codeHistoryDetail = null;
+            this.currentHistoryAbortController = null;
+            await this.postCodeState();
+            return;
+        }
+
+        const detailResult = await this.apiClient.getCodingTaskHistoryDetail(
+            selectedTaskId,
+            controller.signal,
+        );
+        if (this.currentHistoryAbortController !== controller || controller.signal.aborted) {
+            return;
+        }
+
+        this.codeHistoryLoading = false;
+        if (!detailResult.ok) {
+            this.codeHistoryError = HISTORY_LOAD_FAILED_MESSAGE;
+            this.codeHistoryDetail = null;
+            this.currentHistoryAbortController = null;
+            await this.postCodeState();
+            return;
+        }
+
+        this.codeHistoryError = null;
+        this.codeHistoryDetail = toHistoryDetailViewModel(detailResult.data);
+        this.currentHistoryAbortController = null;
+        await this.postCodeState();
+    }
+
+    private async reuseHistoryTask(taskId: string): Promise<void> {
+        const detail = this.codeHistoryDetail;
+        if (!detail || detail.taskId !== taskId) {
+            await this.refreshHistory(taskId);
+        }
+        const activeDetail = this.codeHistoryDetail;
+        if (!activeDetail || activeDetail.taskId !== taskId) {
+            return;
+        }
+
+        await this.postMessage({
+            type: "code:fillInputs",
+            prompt: activeDetail.userPrompt,
+            contextFiles: activeDetail.contextFiles,
+        });
+
+        const availability = this.getCodeAvailability();
+        this.codeHistoryNotice =
+            availability.context &&
+            availability.context.workspaceFilePath !== activeDetail.targetFilePath
+                ? HISTORY_REUSED_TARGET_MISMATCH_MESSAGE
+                : HISTORY_REUSED_MESSAGE;
+        await this.postCodeState();
     }
 
     private async handleToolCall(
@@ -749,11 +895,32 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
                 this.codeStatus !== "applying",
             canCancel: this.codeStatus === "running",
             canApply: this.codeStatus === "ready_to_apply" && this.currentTaskResult !== null,
+            historyLoading: this.codeHistoryLoading,
+            historyError: this.codeHistoryError,
+            historyNotice: this.codeHistoryNotice,
+            historyItems: this.codeHistoryItems,
+            historyDetail: this.codeHistoryDetail,
         };
         await this.postMessage({
             type: "code:update",
             data,
         });
+    }
+
+    private resolveSelectedHistoryTaskId(
+        items: Array<{ task_id: string }>,
+        preferredTaskId?: string | null,
+    ): string | null {
+        if (preferredTaskId && items.some((item) => item.task_id === preferredTaskId)) {
+            return preferredTaskId;
+        }
+        if (
+            this.selectedHistoryTaskId &&
+            items.some((item) => item.task_id === this.selectedHistoryTaskId)
+        ) {
+            return this.selectedHistoryTaskId;
+        }
+        return items[0]?.task_id ?? null;
     }
 
     private async postMessage(message: SidebarMessageToWebview): Promise<void> {
@@ -896,6 +1063,27 @@ function getDisclaimer(historySource: string | null | undefined): string | null 
         return MIXED_DISCLAIMER;
     }
     return null;
+}
+
+function toHistoryDetailViewModel(
+    detail: BackendCodingTaskHistoryDetail,
+): CodingTaskHistoryDetailViewModel {
+    return {
+        taskId: detail.task_id,
+        targetFilePath: detail.target_file_path,
+        userPrompt: detail.user_prompt,
+        contextFiles: detail.context_files,
+        status: detail.status,
+        createdAt: detail.created_at,
+        updatedAt: detail.updated_at,
+        transcriptText: detail.steps.map((step) => formatStepTranscript(step)).join("\n"),
+        modelOutputText: detail.model_output_text ?? "",
+        draftText: detail.verified_draft_content ?? "",
+        intent: detail.intent ?? null,
+        reasoning: detail.reasoning ?? null,
+        lastError: detail.last_error ?? null,
+        appliedEventId: detail.applied_event_id ?? null,
+    };
 }
 
 function validateDraftResult(

@@ -141,6 +141,23 @@
             gap: 10px;
         }
 
+        .history-task-button {
+            width: 100%;
+            border: 1px solid var(--vscode-list-hoverBackground);
+            background: transparent;
+            color: inherit;
+            border-radius: 8px;
+            padding: 10px 12px;
+            cursor: pointer;
+            text-align: left;
+            font: inherit;
+        }
+
+        .history-task-button.active {
+            border-color: var(--vscode-button-background);
+            background: var(--vscode-list-activeSelectionBackground, transparent);
+        }
+
         .timeline-item,
         .related-item,
         .panel-box {
@@ -307,6 +324,43 @@
                 <h3>Verified Draft</h3>
                 <pre id="code-draft"></pre>
             </section>
+
+            <section class="panel-box">
+                <h3>Recent Tasks</h3>
+                <p id="history-loading" class="muted hidden">Loading recent tasks...</p>
+                <p id="history-error" class="muted hidden"></p>
+                <p id="history-notice" class="muted hidden"></p>
+                <p id="history-empty" class="muted hidden">No tasks yet.</p>
+                <ul id="history-list" class="related-list"></ul>
+            </section>
+
+            <section class="panel-box">
+                <div class="row">
+                    <h3>History Detail</h3>
+                    <button id="reuse-history-button" class="action-button" type="button" disabled>
+                        Reuse Prompt/Context
+                    </button>
+                </div>
+                <p id="history-detail-empty" class="muted">Select a recent task to inspect it.</p>
+                <div id="history-detail" class="hidden">
+                    <p id="history-detail-meta" class="muted"></p>
+                    <p id="history-detail-updated" class="muted"></p>
+                    <h4>Prompt</h4>
+                    <pre id="history-detail-prompt"></pre>
+                    <h4>Context Files</h4>
+                    <pre id="history-detail-context"></pre>
+                    <h4>Step Transcript</h4>
+                    <pre id="history-detail-transcript"></pre>
+                    <h4>Model Output</h4>
+                    <pre id="history-detail-model-output"></pre>
+                    <h4>Verified Draft</h4>
+                    <pre id="history-detail-draft"></pre>
+                    <h4>Intent / Reasoning</h4>
+                    <pre id="history-detail-intent"></pre>
+                    <h4>Apply Result</h4>
+                    <pre id="history-detail-apply"></pre>
+                </div>
+            </section>
         </section>
     </div>
 
@@ -330,12 +384,15 @@
         const runButton = document.getElementById("run-button");
         const cancelButton = document.getElementById("cancel-button");
         const applyButton = document.getElementById("apply-button");
+        const reuseHistoryButton = document.getElementById("reuse-history-button");
 
         let currentMode = "explain";
         let latestCodeState = {
             canRun: false,
             canCancel: false,
             canApply: false,
+            historyItems: [],
+            historyDetail: null,
         };
 
         retryButton.addEventListener("click", () => {
@@ -366,6 +423,16 @@
             vscode.postMessage({ type: "applyTask" });
         });
 
+        reuseHistoryButton.addEventListener("click", () => {
+            if (!latestCodeState.historyDetail) {
+                return;
+            }
+            vscode.postMessage({
+                type: "reuseHistoryTask",
+                taskId: latestCodeState.historyDetail.taskId,
+            });
+        });
+
         window.addEventListener("message", (event) => {
             const message = event.data;
             switch (message.type) {
@@ -374,6 +441,11 @@
                     break;
                 case "code:update":
                     renderCode(message.data);
+                    break;
+                case "code:fillInputs":
+                    promptInput.value = message.prompt || "";
+                    contextFile1.value = message.contextFiles?.[0] || "";
+                    contextFile2.value = message.contextFiles?.[1] || "";
                     break;
                 case "state:empty":
                     showEmpty(message.message);
@@ -415,6 +487,78 @@
             runButton.disabled = !data.canRun;
             cancelButton.disabled = !data.canCancel;
             applyButton.disabled = !data.canApply;
+            renderHistory(data);
+        }
+
+        function renderHistory(data) {
+            const loading = document.getElementById("history-loading");
+            const error = document.getElementById("history-error");
+            const notice = document.getElementById("history-notice");
+            const empty = document.getElementById("history-empty");
+            const list = document.getElementById("history-list");
+
+            loading.classList.toggle("hidden", !data.historyLoading);
+            error.textContent = data.historyError || "";
+            error.classList.toggle("hidden", !data.historyError);
+            notice.textContent = data.historyNotice || "";
+            notice.classList.toggle("hidden", !data.historyNotice);
+            empty.classList.toggle(
+                "hidden",
+                data.historyLoading || Boolean(data.historyError) || data.historyItems.length > 0,
+            );
+
+            list.replaceChildren();
+            data.historyItems.forEach((item) => {
+                const li = document.createElement("li");
+                const button = document.createElement("button");
+                button.type = "button";
+                button.className = `history-task-button${item.selected ? " active" : ""}`;
+                button.innerHTML = `
+                    <div class="row">
+                        <span class="badge">${escapeHtml(item.status)}</span>
+                        <span class="muted">${escapeHtml(item.updatedAt)}</span>
+                    </div>
+                    <p>${escapeHtml(item.targetFilePath)}</p>
+                `;
+                button.addEventListener("click", () => {
+                    vscode.postMessage({ type: "selectHistoryTask", taskId: item.taskId });
+                });
+                li.appendChild(button);
+                list.appendChild(li);
+            });
+
+            const detail = data.historyDetail;
+            document.getElementById("history-detail-empty").classList.toggle("hidden", Boolean(detail));
+            document.getElementById("history-detail").classList.toggle("hidden", !detail);
+            reuseHistoryButton.disabled = !detail;
+            if (!detail) {
+                return;
+            }
+
+            document.getElementById("history-detail-meta").textContent =
+                `${detail.targetFilePath} - ${detail.status}`;
+            document.getElementById("history-detail-updated").textContent =
+                `Created ${detail.createdAt} | Updated ${detail.updatedAt}`;
+            document.getElementById("history-detail-prompt").textContent = detail.userPrompt || "";
+            document.getElementById("history-detail-context").textContent =
+                detail.contextFiles.length > 0 ? detail.contextFiles.join("\n") : "<none>";
+            document.getElementById("history-detail-transcript").textContent =
+                detail.transcriptText || "<no steps>";
+            document.getElementById("history-detail-model-output").textContent =
+                detail.modelOutputText || "<empty>";
+            document.getElementById("history-detail-draft").textContent =
+                detail.draftText || "<empty>";
+            document.getElementById("history-detail-intent").textContent = [
+                detail.intent ? `Intent: ${detail.intent}` : "Intent: <empty>",
+                detail.reasoning ? `Reasoning: ${detail.reasoning}` : "Reasoning: <empty>",
+                detail.lastError ? `Last error: ${detail.lastError}` : null,
+            ]
+                .filter(Boolean)
+                .join("\n");
+            document.getElementById("history-detail-apply").textContent =
+                detail.appliedEventId
+                    ? `Applied event: ${detail.appliedEventId}`
+                    : "Not applied yet.";
         }
 
         function hideAllStates() {

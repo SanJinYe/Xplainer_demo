@@ -8,6 +8,13 @@ export type ApiErrorCategory =
 
 export type SidebarMode = "explain" | "code";
 export type HistorySource = "baseline_only" | "mixed" | "traced_only";
+export type BackendCodingTaskStatus =
+    | "created"
+    | "running"
+    | "ready_to_apply"
+    | "cancelled"
+    | "failed"
+    | "applied";
 export type CodeTaskStatus =
     | "idle"
     | "running"
@@ -175,6 +182,35 @@ export interface CodingTaskDraftResult {
     action_type: "modify";
 }
 
+export interface CodingTaskAppliedPayload {
+    event_id: string;
+}
+
+export interface BackendCodingTaskHistoryItem {
+    task_id: string;
+    target_file_path: string;
+    status: BackendCodingTaskStatus;
+    created_at: string;
+    updated_at: string;
+}
+
+export interface BackendCodingTaskHistoryDetail {
+    task_id: string;
+    target_file_path: string;
+    user_prompt: string;
+    context_files: string[];
+    status: BackendCodingTaskStatus;
+    created_at: string;
+    updated_at: string;
+    steps: BackendTaskStepEvent[];
+    model_output_text?: string | null;
+    verified_draft_content?: string | null;
+    intent?: string | null;
+    reasoning?: string | null;
+    last_error?: string | null;
+    applied_event_id?: string | null;
+}
+
 export interface BackendRelatedEntity {
     entity_id: string;
     entity_name: string;
@@ -322,6 +358,32 @@ export interface SidebarViewModel {
     relatedEntities: RelatedEntityViewModel[];
 }
 
+export interface CodingTaskHistoryItemViewModel {
+    taskId: string;
+    targetFilePath: string;
+    status: BackendCodingTaskStatus;
+    createdAt: string;
+    updatedAt: string;
+    selected: boolean;
+}
+
+export interface CodingTaskHistoryDetailViewModel {
+    taskId: string;
+    targetFilePath: string;
+    userPrompt: string;
+    contextFiles: string[];
+    status: BackendCodingTaskStatus;
+    createdAt: string;
+    updatedAt: string;
+    transcriptText: string;
+    modelOutputText: string;
+    draftText: string;
+    intent: string | null;
+    reasoning: string | null;
+    lastError: string | null;
+    appliedEventId: string | null;
+}
+
 export interface CodeViewModel {
     filePath: string | null;
     status: CodeTaskStatus;
@@ -332,6 +394,11 @@ export interface CodeViewModel {
     canRun: boolean;
     canCancel: boolean;
     canApply: boolean;
+    historyLoading: boolean;
+    historyError: string | null;
+    historyNotice: string | null;
+    historyItems: CodingTaskHistoryItemViewModel[];
+    historyDetail: CodingTaskHistoryDetailViewModel | null;
 }
 
 export interface SidebarEmptyMessage {
@@ -365,9 +432,16 @@ export interface SidebarCodeMessage {
     data: CodeViewModel;
 }
 
+export interface SidebarCodeFillInputsMessage {
+    type: "code:fillInputs";
+    prompt: string;
+    contextFiles: string[];
+}
+
 export type SidebarMessageToWebview =
     | SidebarModeMessage
     | SidebarCodeMessage
+    | SidebarCodeFillInputsMessage
     | SidebarEmptyMessage
     | SidebarLoadingMessage
     | SidebarUpdateMessage
@@ -405,6 +479,16 @@ export interface SidebarApplyTaskMessage {
     type: "applyTask";
 }
 
+export interface SidebarSelectHistoryTaskMessage {
+    type: "selectHistoryTask";
+    taskId: string;
+}
+
+export interface SidebarReuseHistoryTaskMessage {
+    type: "reuseHistoryTask";
+    taskId: string;
+}
+
 export type SidebarMessageFromWebview =
     | SidebarReadyMessage
     | SidebarRefreshMessage
@@ -412,4 +496,6 @@ export type SidebarMessageFromWebview =
     | SidebarOpenRelatedEntityMessage
     | SidebarRunTaskMessage
     | SidebarCancelTaskMessage
-    | SidebarApplyTaskMessage;
+    | SidebarApplyTaskMessage
+    | SidebarSelectHistoryTaskMessage
+    | SidebarReuseHistoryTaskMessage;
