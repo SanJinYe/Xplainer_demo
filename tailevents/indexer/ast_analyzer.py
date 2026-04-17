@@ -298,6 +298,17 @@ class _RelationExtractor(ast.NodeVisitor):
 
     def _visit_function(self, name: str, node: ast.AST) -> None:
         qualified_name = self._qualified_name(name)
+        if (
+            self._class_stack
+            and self._container_stack
+            and self._container_stack[-1][1] == "class"
+            and len(self._class_stack) == 1
+        ):
+            self._add_relation(
+                self._class_stack[-1],
+                qualified_name,
+                RelationType.COMPOSED_OF.value,
+            )
         self._entity_stack.append(qualified_name)
         kind = "method" if self._container_stack and self._container_stack[-1][1] == "class" else "function"
         self._container_stack.append((name, kind))

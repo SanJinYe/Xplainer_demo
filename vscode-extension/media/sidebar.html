@@ -91,6 +91,7 @@
 
         h2,
         h3,
+        h4,
         p,
         ul,
         pre,
@@ -241,6 +242,7 @@
                     <h3>Explanation</h3>
                     <p id="summary-placeholder" class="muted hidden">正在生成摘要...</p>
                     <p id="summary-text" class="lead hidden"></p>
+                    <p id="history-disclaimer" class="muted hidden"></p>
                     <p id="detail-text" class="text-block hidden"></p>
                     <p id="stream-error" class="muted hidden"></p>
                 </section>
@@ -252,9 +254,17 @@
                 </section>
 
                 <section class="section">
-                    <h3>Related Entities</h3>
-                    <p id="related-empty" class="muted hidden">No related entities.</p>
-                    <ul id="related-list" class="related-list"></ul>
+                    <h3>上下文影响</h3>
+                    <div class="panel-box">
+                        <h4>Who calls this</h4>
+                        <p id="callers-empty" class="muted hidden">No callers.</p>
+                        <ul id="callers-list" class="related-list"></ul>
+                    </div>
+                    <div class="panel-box">
+                        <h4>What this calls</h4>
+                        <p id="callees-empty" class="muted hidden">No callees.</p>
+                        <ul id="callees-list" class="related-list"></ul>
+                    </div>
                 </section>
             </section>
         </section>
@@ -451,6 +461,8 @@
             document.getElementById("event-count").textContent = `${data.eventCount} linked event(s)`;
             document.getElementById("summary-text").textContent = data.summary || "";
             document.getElementById("summary-text").classList.toggle("hidden", !data.summary);
+            document.getElementById("history-disclaimer").textContent = data.disclaimer || "";
+            document.getElementById("history-disclaimer").classList.toggle("hidden", !data.disclaimer);
             document.getElementById("summary-placeholder").classList.toggle(
                 "hidden",
                 !data.summaryPending || Boolean(data.summary),
@@ -480,11 +492,17 @@
                 timelineList.appendChild(li);
             });
 
-            const relatedEmpty = document.getElementById("related-empty");
-            relatedEmpty.classList.toggle("hidden", data.relatedEntities.length > 0);
-            const relatedList = document.getElementById("related-list");
-            relatedList.replaceChildren();
-            data.relatedEntities.forEach((item) => {
+            renderRelatedList("callers-list", "callers-empty", data.callers);
+            renderRelatedList("callees-list", "callees-empty", data.callees);
+        }
+
+        function renderRelatedList(listId, emptyId, items) {
+            const empty = document.getElementById(emptyId);
+            empty.classList.toggle("hidden", items.length > 0);
+
+            const list = document.getElementById(listId);
+            list.replaceChildren();
+            items.forEach((item) => {
                 const li = document.createElement("li");
                 li.className = "related-item";
                 const button = document.createElement("button");
@@ -498,9 +516,9 @@
 
                 const meta = document.createElement("p");
                 meta.className = "muted";
-                meta.textContent = `${item.relationLabel} • ${item.qualifiedName}`;
+                meta.textContent = `${item.relationLabel} - ${item.qualifiedName}`;
                 li.appendChild(meta);
-                relatedList.appendChild(li);
+                list.appendChild(li);
             });
         }
 

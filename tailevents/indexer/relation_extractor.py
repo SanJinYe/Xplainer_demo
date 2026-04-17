@@ -11,6 +11,7 @@ from tailevents.indexer.ast_analyzer import ASTAnalyzer
 @dataclass
 class RelationSyncResult:
     relation_ids: list[str]
+    impacted_entity_ids: list[str]
 
 
 class RelationExtractor:
@@ -28,7 +29,13 @@ class RelationExtractor:
         source_entity_ids_to_refresh: list[str],
         event_id: str,
     ) -> RelationSyncResult:
+        impacted_entity_ids: list[str] = []
         for entity_id in dict.fromkeys(source_entity_ids_to_refresh):
+            previous_relations = await self._relation_store.get_outgoing(entity_id)
+            impacted_entity_ids.append(entity_id)
+            impacted_entity_ids.extend(
+                relation.target for relation in previous_relations if relation.is_active
+            )
             await self._relation_store.deactivate_by_source(entity_id)
 
         extracted_relations = self._analyzer.extract_relations(
@@ -61,8 +68,12 @@ class RelationExtractor:
                 from_event=event_id,
             )
             relation_ids.append(await self._relation_store.put(relation_record))
+            impacted_entity_ids.extend([source_id, target_id])
 
-        return RelationSyncResult(relation_ids=relation_ids)
+        return RelationSyncResult(
+            relation_ids=relation_ids,
+            impacted_entity_ids=list(dict.fromkeys(impacted_entity_ids)),
+        )
 
 
 __all__ = ["RelationExtractor", "RelationSyncResult"]

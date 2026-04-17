@@ -6,6 +6,7 @@ It records structured change events, maps them to code entities with AST indexin
 
 - fast summaries for hover
 - streamed detailed explanations for the sidebar
+- baseline-aware explanation metadata and structured caller/callee context
 
 The current repository only keeps the implemented product surface. Design notes, plans, local progress logs, and tests stay out of version control.
 
@@ -16,6 +17,8 @@ The current repository only keeps the implemented product surface. Design notes,
 - Resolves symbols and cursor locations to entities
 - Returns deterministic low-latency summaries for hover
 - Streams detailed explanations over SSE for the sidebar
+- Labels explanation history as baseline-only, mixed, or traced-only
+- Shows structured caller/callee context in the sidebar instead of free-form related-entity text
 - Tracks explanation telemetry in admin stats
 - Supports baseline onboarding for existing Python files
 - Exposes a minimal coding-task loop in the VS Code extension:
@@ -40,10 +43,13 @@ Coding Agent / Baseline Onboarding
 ### Explain
 
 - Hover asks for a summary and returns immediately from cached description or deterministic event-derived text
+- Hover adds a lightweight baseline tag only when the entity comes purely from baseline history
 - Sidebar opens an SSE stream and renders:
   - init metadata and summary first
   - detailed explanation deltas progressively
   - final explanation on `done`
+- Sidebar shows a baseline/mixed disclaimer when explanation history is not fully traced
+- Sidebar renders `Who calls this` and `What this calls` from structured relation data
 
 ### Code
 
@@ -117,6 +123,7 @@ For extension development, open the repo in VS Code and start the extension host
 - Python is the only indexed language today
 - Coding tasks are still single-file oriented
 - Graph analysis is still a stub
+- Container/member relation data is stored but not shown in the current UI
 - Streamed detailed explanation is implemented, but multi-model routing is only reserved in config and not enabled by default
 
 ## License

@@ -29,7 +29,6 @@ class ContextAssembler:
             return self._assemble_detailed(
                 entity=entity,
                 events=ordered_events,
-                related_entities=related_entities,
                 doc_snippets=doc_snippets,
             )
         return self._assemble_trace(entity, ordered_events, related_entities, doc_snippets)
@@ -45,14 +44,11 @@ class ContextAssembler:
         self,
         entity: CodeEntity,
         events: list[TailEvent],
-        related_entities: list[dict],
         doc_snippets: list[dict],
     ) -> str:
-        callers, callees = self._select_call_relations(related_entities)
         sections = [
             self._format_target_entity(entity),
             self._format_event_context(self._select_detailed_events(events)),
-            self._format_call_relations(callers, callees),
         ]
         if doc_snippets:
             sections.append(self._format_external_docs(doc_snippets))
@@ -168,45 +164,6 @@ class ContextAssembler:
             if len(selected) == 3:
                 break
         return selected
-
-    def _select_call_relations(
-        self, related_entities: list[dict]
-    ) -> tuple[list[dict], list[dict]]:
-        callers: list[dict] = []
-        callees: list[dict] = []
-
-        for relation in related_entities:
-            if relation.get("relation_type") != "calls":
-                continue
-            if relation.get("direction") == "incoming" and len(callers) < 2:
-                callers.append(relation)
-            elif relation.get("direction") == "outgoing" and len(callees) < 2:
-                callees.append(relation)
-
-        return callers, callees
-
-    def _format_call_relations(self, callers: list[dict], callees: list[dict]) -> str:
-        if not callers and not callees:
-            return ""
-
-        lines = ["# Call Relations"]
-        if callers:
-            lines.append("Incoming callers:")
-            lines.extend(self._format_call_relation_items(callers))
-        if callees:
-            lines.append("Outgoing callees:")
-            lines.extend(self._format_call_relation_items(callees))
-        return "\n".join(lines)
-
-    def _format_call_relation_items(self, relations: list[dict]) -> list[str]:
-        items = []
-        for relation in relations:
-            item = f"- {relation['qualified_name']} ({relation['entity_type']})"
-            context = relation.get("context")
-            if context:
-                item = f"{item} - {context}"
-            items.append(item)
-        return items
 
     def _format_relations(self, related_entities: list[dict]) -> str:
         if not related_entities:

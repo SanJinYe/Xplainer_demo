@@ -8,6 +8,51 @@ from pydantic import BaseModel, Field
 from tailevents.models.enums import EntityType
 
 
+HistorySource = Literal["baseline_only", "mixed", "traced_only"]
+RelationContextKind = Literal["module", "class", "function", "method"]
+RelationContextRole = Literal["caller", "callee", "container", "member"]
+
+
+class RelationContextItem(BaseModel):
+    """Structured relation item for explanation payloads."""
+
+    entity_id: str
+    qualified_name: str
+    kind: RelationContextKind
+    relation: RelationContextRole
+
+
+class LocalRelationContext(BaseModel):
+    """Local relation context shown by the explanation UI."""
+
+    callers: list[RelationContextItem] = Field(default_factory=list)
+    callees: list[RelationContextItem] = Field(default_factory=list)
+    containers: list[RelationContextItem] = Field(default_factory=list)
+    members: list[RelationContextItem] = Field(default_factory=list)
+
+
+class GlobalRelationContext(BaseModel):
+    """Reserved structure for later graph-aware relation context."""
+
+    paths: Optional[list[dict]] = None
+    subgraph: Optional[dict] = None
+
+
+class RelationContext(BaseModel):
+    """Structured relation context for explanation payloads."""
+
+    local: LocalRelationContext = Field(default_factory=LocalRelationContext)
+    global_: GlobalRelationContext = Field(
+        default_factory=GlobalRelationContext,
+        alias="global",
+        serialization_alias="global",
+    )
+
+    model_config = {
+        "populate_by_name": True,
+    }
+
+
 class ExplanationRequest(BaseModel):
     """User-facing explanation request."""
 
@@ -36,6 +81,8 @@ class EntityExplanation(BaseModel):
 
     creation_intent: Optional[str] = None
     modification_history: list[dict] = Field(default_factory=list)
+    history_source: HistorySource = "traced_only"
+    relation_context: RelationContext = Field(default_factory=RelationContext)
     related_entities: list[dict] = Field(default_factory=list)
     external_doc_snippets: list[dict] = Field(default_factory=list)
 
@@ -65,6 +112,7 @@ class ExplanationStreamInit(BaseModel):
     line_range: Optional[tuple[int, int]] = None
     event_count: int = 0
     summary: Optional[str] = None
+    history_source: HistorySource = "traced_only"
 
 
 class ExplanationStreamDelta(BaseModel):
@@ -105,4 +153,9 @@ __all__ = [
     "ExplanationStreamError",
     "ExplanationStreamEvent",
     "ExplanationStreamInit",
+    "GlobalRelationContext",
+    "HistorySource",
+    "LocalRelationContext",
+    "RelationContext",
+    "RelationContextItem",
 ]

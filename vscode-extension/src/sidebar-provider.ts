@@ -46,6 +46,9 @@ const APPLY_SUCCESS_MESSAGE = "File updated and event written.";
 const APPLY_SUCCESS_NO_ENTITY_MESSAGE = "File updated and event written. Re-run explain if needed.";
 const FILE_CHANGED_MESSAGE = "The file changed after generation. Please run again.";
 const APPLY_FAILED_MESSAGE = "Failed to apply the verified draft. Please run again.";
+const BASELINE_ONLY_DISCLAIMER =
+    "此解释基于已有代码的基线扫描，不是真实 agent 会话中的创建/修改历史";
+const MIXED_DISCLAIMER = "此解释同时包含基线扫描与真实 agent 会话记录";
 
 interface SidebarRuntime {
     getActiveEditor: () => vscode.TextEditor | null;
@@ -792,11 +795,15 @@ function buildInitialViewModel(payload: BackendExplanationStreamInit): SidebarVi
         eventCount: payload.event_count,
         summary,
         summaryPending: summary === null,
+        historySource: payload.history_source,
+        disclaimer: getDisclaimer(payload.history_source),
         detailedExplanation: null,
         streamError: null,
         timeline: [],
         historyAvailable: false,
         historyLoading: true,
+        callers: [],
+        callees: [],
         relatedEntities: [],
     };
 }
@@ -810,8 +817,20 @@ function mergeFinalExplanation(
     viewModel.signature = explanation.signature ?? viewModel.signature ?? null;
     viewModel.summary = explanation.summary || viewModel.summary;
     viewModel.summaryPending = false;
+    viewModel.historySource = explanation.history_source;
+    viewModel.disclaimer = getDisclaimer(explanation.history_source);
     viewModel.detailedExplanation =
         explanation.detailed_explanation ?? viewModel.detailedExplanation ?? null;
+    viewModel.callers = buildContextImpactItems(
+        explanation.relation_context?.local?.callers ?? [],
+        "incoming",
+        "caller",
+    );
+    viewModel.callees = buildContextImpactItems(
+        explanation.relation_context?.local?.callees ?? [],
+        "outgoing",
+        "callee",
+    );
     viewModel.relatedEntities = buildRelatedEntities(explanation);
     viewModel.streamError = null;
 }
@@ -846,6 +865,37 @@ function buildRelatedEntities(
             direction,
         };
     });
+}
+
+function buildContextImpactItems(
+    items: Array<{
+        entity_id: string;
+        qualified_name: string;
+        relation: string;
+    }>,
+    direction: string,
+    relationLabel: string,
+): RelatedEntityViewModel[] {
+    return items.map((item) => {
+        const label = item.qualified_name.split(".").at(-1) ?? item.qualified_name;
+        return {
+            entityId: String(item.entity_id),
+            label,
+            relationLabel,
+            qualifiedName: item.qualified_name,
+            direction,
+        };
+    });
+}
+
+function getDisclaimer(historySource: string | null | undefined): string | null {
+    if (historySource === "baseline_only") {
+        return BASELINE_ONLY_DISCLAIMER;
+    }
+    if (historySource === "mixed") {
+        return MIXED_DISCLAIMER;
+    }
+    return null;
 }
 
 function validateDraftResult(

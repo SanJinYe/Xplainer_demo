@@ -96,7 +96,11 @@ class Indexer(IndexerProtocol):
             file_path=file_path,
             known_entities=known_entities,
             source_entity_ids_to_refresh=[
-                entity.entity_id for entity in inspection.existing_entities
+                entity.entity_id
+                for entity in (
+                    inspection.existing_entities
+                    + list(entity_result.current_entities.values())
+                )
             ],
             event_id=event.event_id,
         )
@@ -105,6 +109,7 @@ class Indexer(IndexerProtocol):
             entity_result.created_entity_ids
             + entity_result.modified_entity_ids
             + entity_result.deleted_entity_ids
+            + relation_result.impacted_entity_ids
         )
 
         if retry_pending:

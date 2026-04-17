@@ -20,7 +20,7 @@ from tailevents.explanation.prompts import (
 )
 from tailevents.explanation.telemetry import ExplanationMetricsTracker
 from tailevents.models.entity import CodeEntity
-from tailevents.models.enums import ActionType
+from tailevents.models.enums import ActionType, EntityType, RelationType
 from tailevents.models.event import ExternalRef, TailEvent
 from tailevents.models.explanation import (
     EntityExplanation,
@@ -29,6 +29,10 @@ from tailevents.models.explanation import (
     ExplanationStreamError,
     ExplanationStreamEvent,
     ExplanationStreamInit,
+    HistorySource,
+    LocalRelationContext,
+    RelationContext,
+    RelationContextItem,
 )
 from tailevents.models.protocols import (
     CacheProtocol,
@@ -44,7 +48,10 @@ from tailevents.models.protocols import (
 @dataclass
 class _PreparedExplanation:
     entity: CodeEntity
-    events: list[TailEvent]
+    all_events: list[TailEvent]
+    prompt_events: list[TailEvent]
+    history_source: HistorySource
+    relation_context: RelationContext
     related_entities: list[dict]
     doc_snippets: list[dict]
     user_prompt: str
@@ -178,9 +185,14 @@ class ExplanationEngine(ExplanationEngineProtocol):
         cached = await self._get_cached_explanation(cache_key)
         if cached is not None:
             entity = await self._get_entity_or_raise(entity_id)
-            events = await self._load_events(entity)
-            init_summary, _ = self._build_fast_summary(entity, events)
-            init_event = self._build_stream_init(entity=entity, summary=init_summary)
+            all_events = await self._load_all_events(entity)
+            history_source = self._classify_history_source(all_events)
+            init_summary, _ = self._build_fast_summary(entity, all_events)
+            init_event = self._build_stream_init(
+                entity=entity,
+                summary=init_summary,
+                history_source=history_source,
+            )
             first_event_at = time.perf_counter()
             output_chars = len(cached.detailed_explanation or "")
             cache_hit = True
@@ -252,8 +264,9 @@ class ExplanationEngine(ExplanationEngineProtocol):
     async def _explain_summary_fast(self, entity_id: str) -> EntityExplanation:
         started_at = time.perf_counter()
         entity = await self._get_entity_or_raise(entity_id)
-        events = await self._load_events(entity)
-        summary, from_cache = self._build_fast_summary(entity, events)
+        all_events = await self._load_all_events(entity)
+        history_source = self._classify_history_source(all_events)
+        summary, from_cache = self._build_fast_summary(entity, all_events)
 
         explanation = EntityExplanation(
             entity_id=entity.entity_id,
@@ -263,8 +276,10 @@ class ExplanationEngine(ExplanationEngineProtocol):
             signature=entity.signature,
             summary=summary or "",
             detailed_explanation=None,
-            creation_intent=self._creation_intent(events),
+            creation_intent=self._creation_intent(all_events, history_source),
             modification_history=[],
+            history_source=history_source,
+            relation_context=self._empty_relation_context(),
             related_entities=[],
             external_doc_snippets=[],
             from_cache=from_cache,
@@ -314,7 +329,9 @@ class ExplanationEngine(ExplanationEngineProtocol):
         )
         explanation = self._build_final_explanation(
             entity=prepared.entity,
-            events=prepared.events,
+            all_events=prepared.all_events,
+            history_source=prepared.history_source,
+            relation_context=prepared.relation_context,
             related_entities=prepared.related_entities,
             doc_snippets=prepared.doc_snippets,
             raw_output=raw_output,
@@ -345,8 +362,12 @@ class ExplanationEngine(ExplanationEngineProtocol):
             detail_level="detailed",
             include_relations=include_relations,
         )
-        init_summary, _ = self._build_fast_summary(prepared.entity, prepared.events)
-        init_event = self._build_stream_init(entity=prepared.entity, summary=init_summary)
+        init_summary, _ = self._build_fast_summary(prepared.entity, prepared.all_events)
+        init_event = self._build_stream_init(
+            entity=prepared.entity,
+            summary=init_summary,
+            history_source=prepared.history_source,
+        )
 
         async with self._detailed_sessions_lock:
             existing = self._detailed_sessions.get(cache_key)
@@ -416,7 +437,9 @@ class ExplanationEngine(ExplanationEngineProtocol):
 
             explanation = self._build_final_explanation(
                 entity=prepared.entity,
-                events=prepared.events,
+                all_events=prepared.all_events,
+                history_source=prepared.history_source,
+                relation_context=prepared.relation_context,
                 related_entities=prepared.related_entities,
                 doc_snippets=prepared.doc_snippets,
                 raw_output="".join(raw_chunks),
@@ -446,17 +469,24 @@ class ExplanationEngine(ExplanationEngineProtocol):
         include_relations: bool,
     ) -> _PreparedExplanation:
         entity = await self._get_entity_or_raise(entity_id)
-        events = await self._load_events(entity)
-        doc_snippets = await self._load_doc_snippets(events)
-        related_entities = (
-            await self._load_related_entities(entity.entity_id)
-            if include_relations
-            else []
+        all_events = await self._load_all_events(entity)
+        history_source = self._classify_history_source(all_events)
+        prompt_events = self._select_prompt_events(
+            all_events,
+            detail_level=detail_level,
+            history_source=history_source,
         )
+        doc_snippets = await self._load_doc_snippets(prompt_events)
+        relation_context = (
+            await self._load_relation_context(entity.entity_id)
+            if include_relations
+            else self._empty_relation_context()
+        )
+        related_entities = self._derive_related_entities(relation_context)
         doc_snippets_for_prompt = doc_snippets if detail_level != "summary" else []
         context = self._context_assembler.assemble(
             entity=entity,
-            events=events,
+            events=prompt_events,
             related_entities=related_entities,
             doc_snippets=doc_snippets_for_prompt,
             detail_level=detail_level,
@@ -465,11 +495,14 @@ class ExplanationEngine(ExplanationEngineProtocol):
             detail_level=detail_level,
             context=context,
             doc_snippets=doc_snippets_for_prompt,
-            baseline_only=self._is_baseline_only(events),
+            baseline_only=history_source == "baseline_only",
         )
         return _PreparedExplanation(
             entity=entity,
-            events=events,
+            all_events=all_events,
+            prompt_events=prompt_events,
+            history_source=history_source,
+            relation_context=relation_context,
             related_entities=related_entities,
             doc_snippets=doc_snippets,
             user_prompt=user_prompt,
@@ -506,21 +539,47 @@ class ExplanationEngine(ExplanationEngineProtocol):
     ) -> None:
         if not self._cache_enabled or self._cache is None:
             return
-        payload = explanation.model_copy(update={"from_cache": False}).model_dump_json()
+        payload = explanation.model_copy(update={"from_cache": False}).model_dump_json(
+            by_alias=True
+        )
         await self._cache.put(cache_key, payload, ttl=self._cache_ttl)
 
-    async def _load_events(self, entity: CodeEntity) -> list[TailEvent]:
+    async def _load_all_events(self, entity: CodeEntity) -> list[TailEvent]:
         event_ids = [reference.event_id for reference in entity.event_refs]
         if not event_ids:
             return []
 
         events = await self._event_store.get_batch(event_ids)
-        ordered_events = sorted(events, key=lambda item: item.timestamp)
-        if self._max_events <= 0 or len(ordered_events) <= self._max_events:
-            return ordered_events
+        return sorted(events, key=lambda item: item.timestamp)
+
+    def _select_prompt_events(
+        self,
+        events: list[TailEvent],
+        *,
+        detail_level: str,
+        history_source: HistorySource,
+    ) -> list[TailEvent]:
+        filtered = events
+        if history_source == "mixed":
+            filtered = [
+                event for event in events if event.action_type != ActionType.BASELINE
+            ]
+        if detail_level != "trace":
+            return filtered
+        if self._max_events <= 0 or len(filtered) <= self._max_events:
+            return filtered
         if self._max_events == 1:
-            return [ordered_events[0]]
-        return [ordered_events[0]] + ordered_events[-(self._max_events - 1) :]
+            return [filtered[0]]
+        return [filtered[0]] + filtered[-(self._max_events - 1) :]
+
+    def _classify_history_source(self, events: list[TailEvent]) -> HistorySource:
+        has_baseline = any(event.action_type == ActionType.BASELINE for event in events)
+        has_traced = any(event.action_type != ActionType.BASELINE for event in events)
+        if has_baseline and not has_traced:
+            return "baseline_only"
+        if has_baseline and has_traced:
+            return "mixed"
+        return "traced_only"
 
     async def _load_doc_snippets(self, events: list[TailEvent]) -> list[dict]:
         snippets: list[dict] = []
@@ -542,41 +601,139 @@ class ExplanationEngine(ExplanationEngineProtocol):
 
         return snippets
 
-    async def _load_related_entities(self, entity_id: str) -> list[dict]:
-        related_entities: list[dict] = []
-        seen: set[tuple[str, str, str]] = set()
-
+    async def _load_relation_context(self, entity_id: str) -> RelationContext:
         outgoing_relations = await self._relation_store.get_outgoing(entity_id)
         incoming_relations = await self._relation_store.get_incoming(entity_id)
 
-        for direction, relations in (
-            ("outgoing", outgoing_relations),
-            ("incoming", incoming_relations),
-        ):
-            for relation in relations:
-                other_id = relation.target if direction == "outgoing" else relation.source
-                dedupe_key = (direction, relation.relation_type.value, other_id)
+        callers = await self._load_relation_items(
+            relations=incoming_relations,
+            role="caller",
+            other_id_getter=lambda relation: relation.source,
+            allowed_type=RelationType.CALLS,
+            limit=2,
+        )
+        callees = await self._load_relation_items(
+            relations=outgoing_relations,
+            role="callee",
+            other_id_getter=lambda relation: relation.target,
+            allowed_type=RelationType.CALLS,
+            limit=2,
+        )
+        containers = await self._load_relation_items(
+            relations=incoming_relations,
+            role="container",
+            other_id_getter=lambda relation: relation.source,
+            allowed_type=RelationType.COMPOSED_OF,
+            limit=None,
+        )
+        members = await self._load_relation_items(
+            relations=outgoing_relations,
+            role="member",
+            other_id_getter=lambda relation: relation.target,
+            allowed_type=RelationType.COMPOSED_OF,
+            limit=None,
+        )
+
+        return RelationContext(
+            local=LocalRelationContext(
+                callers=callers,
+                callees=callees,
+                containers=containers,
+                members=members,
+            )
+        )
+
+    async def _load_relation_items(
+        self,
+        *,
+        relations: list,
+        role: str,
+        other_id_getter,
+        allowed_type: RelationType,
+        limit: Optional[int],
+    ) -> list[RelationContextItem]:
+        rows: list[tuple[object, CodeEntity]] = []
+        for relation in relations:
+            if relation.relation_type != allowed_type:
+                continue
+            other_id = other_id_getter(relation)
+            other_entity = await self._entity_db.get(other_id)
+            if other_entity is None or other_entity.is_deleted:
+                continue
+            rows.append((relation, other_entity))
+
+        rows.sort(
+            key=lambda item: (
+                -item[0].created_at.timestamp(),
+                item[1].qualified_name,
+            )
+        )
+
+        items: list[RelationContextItem] = []
+        seen: set[str] = set()
+        for _, entity in rows:
+            if entity.entity_id in seen:
+                continue
+            seen.add(entity.entity_id)
+            items.append(self._relation_item(entity=entity, role=role))
+            if limit is not None and len(items) >= limit:
+                break
+        return items
+
+    def _relation_item(
+        self,
+        *,
+        entity: CodeEntity,
+        role: str,
+    ) -> RelationContextItem:
+        return RelationContextItem(
+            entity_id=entity.entity_id,
+            qualified_name=entity.qualified_name,
+            kind=self._relation_kind(entity.entity_type),
+            relation=role,
+        )
+
+    def _relation_kind(self, entity_type: EntityType) -> str:
+        if entity_type == EntityType.CLASS:
+            return "class"
+        if entity_type == EntityType.METHOD:
+            return "method"
+        if entity_type == EntityType.MODULE:
+            return "module"
+        return "function"
+
+    def _empty_relation_context(self) -> RelationContext:
+        return RelationContext()
+
+    def _derive_related_entities(self, relation_context: RelationContext) -> list[dict]:
+        derived: list[dict] = []
+        seen: set[tuple[str, str, str]] = set()
+
+        groups = (
+            ("incoming", "calls", relation_context.local.callers),
+            ("outgoing", "calls", relation_context.local.callees),
+            ("incoming", "composed_of", relation_context.local.containers),
+            ("outgoing", "composed_of", relation_context.local.members),
+        )
+        for direction, relation_type, items in groups:
+            for item in items:
+                dedupe_key = (direction, relation_type, item.entity_id)
                 if dedupe_key in seen:
                     continue
                 seen.add(dedupe_key)
-
-                related_entity = await self._entity_db.get(other_id)
-                if related_entity is None or related_entity.is_deleted:
-                    continue
-                related_entities.append(
+                derived.append(
                     {
-                        "entity_id": related_entity.entity_id,
-                        "entity_name": related_entity.name,
-                        "qualified_name": related_entity.qualified_name,
-                        "entity_type": related_entity.entity_type.value,
+                        "entity_id": item.entity_id,
+                        "entity_name": item.qualified_name.rsplit(".", 1)[-1],
+                        "qualified_name": item.qualified_name,
+                        "entity_type": item.kind,
                         "direction": direction,
-                        "relation_type": relation.relation_type.value,
-                        "confidence": relation.confidence,
-                        "context": relation.context,
+                        "relation_type": relation_type,
+                        "confidence": 1.0,
+                        "context": None,
                     }
                 )
-
-        return related_entities
+        return derived
 
     def _build_user_prompt(
         self,
@@ -594,11 +751,10 @@ class ExplanationEngine(ExplanationEngineProtocol):
         if baseline_only:
             prompt = (
                 f"{prompt}\n\n"
-                "Additional constraints: the current context only contains a baseline event "
+                "Additional constraints: the current context only contains baseline history "
                 "and has no explicit reasoning. Do not guess the original creation intent, "
                 "design rationale, or discarded alternatives. Only describe the current code "
-                "structure, behavior, and the directly observed context. "
-                "不要猜测创建动机、设计动机或被放弃的备选方案。"
+                "structure, behavior, and directly observed context."
             )
         return prompt
 
@@ -620,8 +776,19 @@ class ExplanationEngine(ExplanationEngineProtocol):
             )
         return history
 
-    def _creation_intent(self, events: list[TailEvent]) -> Optional[str]:
+    def _creation_intent(
+        self,
+        events: list[TailEvent],
+        history_source: HistorySource,
+    ) -> Optional[str]:
         if not events:
+            return None
+        if history_source == "baseline_only":
+            return None
+        if history_source == "mixed":
+            for event in events:
+                if event.action_type != ActionType.BASELINE and event.intent.strip():
+                    return event.intent
             return None
         return events[0].intent
 
@@ -671,14 +838,6 @@ class ExplanationEngine(ExplanationEngineProtocol):
             return 1400
         return 1800
 
-    def _is_baseline_only(self, events: list[TailEvent]) -> bool:
-        return bool(
-            len(events) == 1
-            and events[0].action_type == ActionType.BASELINE
-            and not events[0].reasoning
-            and not events[0].decision_alternatives
-        )
-
     def _build_fast_summary(
         self,
         entity: CodeEntity,
@@ -715,6 +874,7 @@ class ExplanationEngine(ExplanationEngineProtocol):
         *,
         entity: CodeEntity,
         summary: Optional[str],
+        history_source: HistorySource,
     ) -> ExplanationStreamInit:
         return ExplanationStreamInit(
             entity_id=entity.entity_id,
@@ -726,13 +886,16 @@ class ExplanationEngine(ExplanationEngineProtocol):
             line_range=entity.line_range,
             event_count=len(entity.event_refs),
             summary=summary,
+            history_source=history_source,
         )
 
     def _build_final_explanation(
         self,
         *,
         entity: CodeEntity,
-        events: list[TailEvent],
+        all_events: list[TailEvent],
+        history_source: HistorySource,
+        relation_context: RelationContext,
         related_entities: list[dict],
         doc_snippets: list[dict],
         raw_output: str,
@@ -744,9 +907,12 @@ class ExplanationEngine(ExplanationEngineProtocol):
             detail_level=detail_level,
         )
         explanation.creation_intent = explanation.creation_intent or self._creation_intent(
-            events
+            all_events,
+            history_source,
         )
-        explanation.modification_history = self._build_modification_history(events)
+        explanation.modification_history = self._build_modification_history(all_events)
+        explanation.history_source = history_source
+        explanation.relation_context = relation_context
         explanation.related_entities = related_entities
         explanation.external_doc_snippets = doc_snippets
         explanation.from_cache = False

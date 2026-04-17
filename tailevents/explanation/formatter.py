@@ -10,21 +10,20 @@ from tailevents.models.explanation import EntityExplanation
 SUMMARY_MAX_CHARS = 120
 SUMMARY_MAX_SENTENCES = 2
 DETAILED_MAX_CHARS = 1200
-DETAILED_SECTION_ORDER = ["核心作用", "关键上下文", "关键事件", "关联实体"]
+DETAILED_SECTION_ORDER = ["核心作用", "关键上下文", "关键事件"]
 DETAILED_SECTION_LIMITS = {
     "核心作用": 220,
-    "关键上下文": 280,
-    "关键事件": 420,
-    "关联实体": 180,
+    "关键上下文": 320,
+    "关键事件": 520,
 }
 LEGACY_SECTION_ORDER = ["作用", "参数", "返回值", "使用场景", "设计背景"]
-ALL_SECTION_HEADERS = DETAILED_SECTION_ORDER + LEGACY_SECTION_ORDER
+ALL_SECTION_HEADERS = DETAILED_SECTION_ORDER + ["关联实体"] + LEGACY_SECTION_ORDER
 SECTION_PATTERN = re.compile(
     r"^\s{0,3}(?:(?:#{1,6}|>)\s*)?"
     r"(核心作用|关键上下文|关键事件|关联实体|作用|参数|返回值|使用场景|设计背景)"
     r"\s*[:：]?\s*(.*)$"
 )
-SENTENCE_PATTERN = re.compile(r"[^。！？!?；;]+[。！？!?；;]?")
+SENTENCE_PATTERN = re.compile(r"[^。！？!?]+[。！？!?]?")
 
 
 class ExplanationFormatter:
@@ -45,11 +44,7 @@ class ExplanationFormatter:
     def _format_summary(self, entity: CodeEntity, raw_output: str) -> EntityExplanation:
         text = raw_output.strip()
         sections = self._extract_sections(text)
-        summary_source = (
-            sections.get("核心作用")
-            or sections.get("作用")
-            or text
-        )
+        summary_source = sections.get("核心作用") or sections.get("作用") or text
         return EntityExplanation(
             entity_id=entity.entity_id,
             entity_name=entity.name,
@@ -79,15 +74,16 @@ class ExplanationFormatter:
         if self._has_legacy_sections(sections):
             return self._format_legacy_detailed(entity, text, sections)
 
+        normalized_text = self._normalize_inline_text(text)
         return EntityExplanation(
             entity_id=entity.entity_id,
             entity_name=entity.name,
             qualified_name=entity.qualified_name,
             entity_type=entity.entity_type,
             signature=entity.signature,
-            summary=self._format_summary_text(text),
+            summary=self._format_summary_text(normalized_text),
             detailed_explanation=self._truncate_with_ellipsis(
-                self._normalize_inline_text(text),
+                normalized_text,
                 DETAILED_MAX_CHARS,
             )
             or None,
@@ -143,9 +139,8 @@ class ExplanationFormatter:
 
         normalized_sections = {
             "核心作用": self._truncate_with_ellipsis(effect or "未提供。", 220),
-            "关键上下文": self._truncate_with_ellipsis(usage_context or "未提供。", 280),
-            "关键事件": self._normalize_bullet_section(design_background, 3, 420),
-            "关联实体": self._normalize_relation_section(None),
+            "关键上下文": self._truncate_with_ellipsis(usage_context or "未提供。", 320),
+            "关键事件": self._normalize_bullet_section(design_background, 3, 520),
         }
         detailed_explanation = self._build_detailed_explanation(normalized_sections)
 
@@ -207,7 +202,6 @@ class ExplanationFormatter:
                 max_items=3,
                 max_chars=DETAILED_SECTION_LIMITS["关键事件"],
             ),
-            "关联实体": self._normalize_relation_section(sections.get("关联实体")),
         }
 
     def _build_detailed_explanation(self, sections: dict[str, str]) -> str:
@@ -247,23 +241,6 @@ class ExplanationFormatter:
             return "未提供。"
         lines = [f"- {item}" for item in items[:max_items]]
         return self._truncate_with_ellipsis("\n".join(lines), max_chars)
-
-    def _normalize_relation_section(self, text: Optional[str]) -> str:
-        items = self._extract_bullet_items(text)
-        if not items:
-            return "未提供。"
-
-        normalized: list[str] = []
-        for item in items[:4]:
-            stripped = item.strip()
-            if stripped.startswith("caller:") or stripped.startswith("callee:"):
-                normalized.append(f"- {stripped}")
-            else:
-                normalized.append(f"- {stripped}")
-        return self._truncate_with_ellipsis(
-            "\n".join(normalized),
-            DETAILED_SECTION_LIMITS["关联实体"],
-        )
 
     def _extract_bullet_items(self, text: Optional[str]) -> list[str]:
         if not text:

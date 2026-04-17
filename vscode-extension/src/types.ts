@@ -7,6 +7,7 @@ export type ApiErrorCategory =
     | "unknown";
 
 export type SidebarMode = "explain" | "code";
+export type HistorySource = "baseline_only" | "mixed" | "traced_only";
 export type CodeTaskStatus =
     | "idle"
     | "running"
@@ -185,6 +186,30 @@ export interface BackendRelatedEntity {
     context?: string | null;
 }
 
+export interface BackendRelationContextItem {
+    entity_id: string;
+    qualified_name: string;
+    kind: "module" | "class" | "function" | "method";
+    relation: "caller" | "callee" | "container" | "member";
+}
+
+export interface BackendLocalRelationContext {
+    callers: BackendRelationContextItem[];
+    callees: BackendRelationContextItem[];
+    containers: BackendRelationContextItem[];
+    members: BackendRelationContextItem[];
+}
+
+export interface BackendGlobalRelationContext {
+    paths?: Array<Record<string, unknown>> | null;
+    subgraph?: Record<string, unknown> | null;
+}
+
+export interface BackendRelationContext {
+    local: BackendLocalRelationContext;
+    global: BackendGlobalRelationContext;
+}
+
 export interface BackendEntityExplanation {
     entity_id: string;
     entity_name: string;
@@ -198,6 +223,8 @@ export interface BackendEntityExplanation {
     usage_context?: string | null;
     creation_intent?: string | null;
     modification_history: Array<Record<string, unknown>>;
+    history_source: HistorySource;
+    relation_context: BackendRelationContext;
     related_entities: BackendRelatedEntity[];
     external_doc_snippets: Array<Record<string, unknown>>;
     generated_at: string;
@@ -216,6 +243,7 @@ export interface BackendExplanationStreamInit {
     line_range?: LineRange | null;
     event_count: number;
     summary?: string | null;
+    history_source: HistorySource;
 }
 
 export interface BackendExplanationStreamDelta {
@@ -282,11 +310,15 @@ export interface SidebarViewModel {
     eventCount: number;
     summary: string | null;
     summaryPending: boolean;
+    historySource: HistorySource;
+    disclaimer: string | null;
     detailedExplanation?: string | null;
     streamError?: string | null;
     timeline: TimelineItemViewModel[];
     historyAvailable: boolean;
     historyLoading: boolean;
+    callers: RelatedEntityViewModel[];
+    callees: RelatedEntityViewModel[];
     relatedEntities: RelatedEntityViewModel[];
 }
 

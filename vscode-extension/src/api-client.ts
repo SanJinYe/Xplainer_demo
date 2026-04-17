@@ -769,7 +769,8 @@ function isExplanationStreamInit(value: any): value is BackendExplanationStreamI
         typeof value.qualified_name === "string" &&
         typeof value.entity_type === "string" &&
         typeof value.file_path === "string" &&
-        typeof value.event_count === "number",
+        typeof value.event_count === "number" &&
+        typeof value.history_source === "string",
     );
 }
 
@@ -779,7 +780,8 @@ function isExplanationStreamDone(value: any): value is BackendExplanationStreamD
         value.event === "done" &&
         value.explanation &&
         typeof value.explanation.entity_id === "string" &&
-        typeof value.explanation.summary === "string",
+        typeof value.explanation.summary === "string" &&
+        typeof value.explanation.history_source === "string",
     );
 }
 
