@@ -18,9 +18,10 @@ import type {
     CodeViewModel,
     CodingTaskHistoryDetailViewModel,
     CodingTaskHistoryItemViewModel,
+    CodingTaskLaunchMode,
+    CodingTaskRequestedCapability,
     CodingTaskDraftResult,
     CodingTaskToolResultPayload,
-    CreateRawEventPayload,
     RelatedEntityViewModel,
     SidebarMessageFromWebview,
     SidebarMessageToWebview,
@@ -38,7 +39,7 @@ const NON_FILE_MESSAGE = "Only local files are supported.";
 const NON_PYTHON_FILE_MESSAGE = "Only Python files are supported.";
 const OUTSIDE_WORKSPACE_MESSAGE = "The active file must be inside the current workspace.";
 const EMPTY_PROMPT_MESSAGE = "Prompt is required.";
-const TOO_MANY_CONTEXT_FILES_MESSAGE = "You can select at most 2 context files.";
+const TOO_MANY_CONTEXT_FILES_MESSAGE = "You can select at most 3 context files.";
 const DUPLICATE_CONTEXT_FILE_MESSAGE = "Context files must not contain duplicates.";
 const CONTEXT_TARGET_CONFLICT_MESSAGE = "Context files must not include the target file.";
 const TASK_RUNNING_MESSAGE = "Task running. Waiting for verified draft...";
@@ -49,11 +50,14 @@ const APPLY_SUCCESS_MESSAGE = "File updated and event written.";
 const APPLY_SUCCESS_NO_ENTITY_MESSAGE = "File updated and event written. Re-run explain if needed.";
 const FILE_CHANGED_MESSAGE = "The file changed after generation. Please run again.";
 const APPLY_FAILED_MESSAGE = "Failed to apply the verified draft. Please run again.";
-const APPLY_HISTORY_FAILED_MESSAGE =
-    "File updated and event written, but task history could not be updated.";
+const APPLY_HISTORY_FAILED_MESSAGE = "Files updated, but task apply confirmation failed.";
+const APPLY_PENDING_MESSAGE = "Files updated. Event write is still pending.";
+const APPLY_WITHOUT_EVENTS_MESSAGE = "Files updated. Some events could not be written.";
 const HISTORY_REUSED_MESSAGE = "Prompt and context files copied from task history.";
 const HISTORY_REUSED_TARGET_MISMATCH_MESSAGE =
     "Prompt and context files copied from task history. The current target file was not changed.";
+const HISTORY_REPLAY_READY_MESSAGE = "Replay prepared. Review the prompt, then click Run.";
+const HISTORY_REPLAY_MISSING_TARGET_MESSAGE = "Replay is unavailable because the target file is missing.";
 const HISTORY_LOAD_FAILED_MESSAGE = "Failed to load recent task history.";
 const BASELINE_ONLY_DISCLAIMER =
     "此解释基于已有代码的基线扫描，不是真实 agent 会话中的创建/修改历史";
@@ -66,17 +70,17 @@ interface SidebarRuntime {
     resolveAbsoluteWorkspacePath?: (workspaceFilePath: string) => string | null;
     getOpenDocumentByAbsolutePath?: (absolutePath: string) => vscode.TextDocument | null;
     readFileText?: (absolutePath: string) => Promise<string>;
-    replaceDocumentContent: (
-        editor: vscode.TextEditor,
-        content: string,
+    applyVerifiedFiles?: (
+        files: Array<{ workspaceFilePath: string; absolutePath: string; content: string }>,
     ) => Promise<boolean>;
-    saveDocument: (document: vscode.TextDocument) => Promise<boolean>;
+    openWorkspaceFile?: (workspaceFilePath: string) => Promise<boolean>;
 }
 
 interface SidebarProviderOptions {
     apiClient: TailEventsApi;
     templatePath: string;
     getBaseUrl: () => string;
+    getSelectedProfileId?: () => string | null;
     runtime: SidebarRuntime;
 }
 
@@ -115,6 +119,8 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
     private readonly template: string;
 
     private readonly getBaseUrl: () => string;
+
+    private readonly getSelectedProfileId: (() => string | null) | undefined;
 
     private readonly runtime: SidebarRuntime;
 
@@ -156,6 +162,16 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
 
     private selectedHistoryTaskId: string | null = null;
 
+    private pendingReplaySourceTaskId: string | null = null;
+
+    private currentTaskLaunchMode: CodingTaskLaunchMode = "new";
+
+    private currentTaskSourceTaskId: string | null = null;
+
+    private selectedProfileId: string | null = null;
+
+    private requestedCapabilities: CodingTaskRequestedCapability[] = [];
+
     private codeModelAttempt = 0;
 
     private lastExplainState: SidebarMessageToWebview = {
@@ -166,6 +182,7 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
     public constructor(options: SidebarProviderOptions) {
         this.apiClient = options.apiClient;
         this.getBaseUrl = options.getBaseUrl;
+        this.getSelectedProfileId = options.getSelectedProfileId;
         this.runtime = options.runtime;
         this.template = readFileSync(options.templatePath, "utf8");
     }
@@ -349,6 +366,9 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
             case "reuseHistoryTask":
                 await this.reuseHistoryTask(message.taskId);
                 return;
+            case "replayHistoryTask":
+                await this.replayHistoryTask(message.taskId);
+                return;
             default:
                 return;
         }
@@ -394,7 +414,11 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         this.codeDraftText = "";
         this.codeModelAttempt = 0;
         this.codeHistoryNotice = null;
+        const pendingReplaySourceTaskId = this.pendingReplaySourceTaskId;
+        this.currentTaskLaunchMode = pendingReplaySourceTaskId ? "replay" : "new";
+        this.currentTaskSourceTaskId = pendingReplaySourceTaskId;
         await this.setCodeState("running", TASK_RUNNING_MESSAGE);
+        const selectedProfileId = this.selectedProfileId ?? this.getSelectedProfileId?.() ?? null;
 
         const handlers: CodingTaskSessionHandlers = {
             onCreated: (taskId) => {
@@ -429,7 +453,7 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
             },
             onResult: (result) => {
                 this.currentTaskResult = result;
-                this.codeDraftText = result.updated_file_content;
+                this.codeDraftText = resolveDraftText(result);
                 this.appendTranscript("result: verified draft ready");
             },
         };
@@ -440,6 +464,11 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
                 target_file_version: availability.context.version,
                 user_prompt: trimmedPrompt,
                 context_files: contextSelections.contextFiles.map((item) => item.workspaceFilePath),
+                editable_files: [],
+                launch_mode: pendingReplaySourceTaskId ? "replay" : "new",
+                source_task_id: pendingReplaySourceTaskId,
+                selected_profile_id: selectedProfileId,
+                requested_capabilities: this.requestedCapabilities,
             },
             handlers,
             controller.signal,
@@ -469,7 +498,8 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         }
 
         this.currentTaskResult = result.data;
-        this.codeDraftText = result.data.updated_file_content;
+        this.pendingReplaySourceTaskId = null;
+        this.codeDraftText = resolveDraftText(result.data);
         await this.setCodeState("ready_to_apply", TASK_READY_MESSAGE);
         await this.refreshHistory(result.data.task_id);
     }
@@ -500,50 +530,47 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         if (
             !currentEditor ||
             currentEditor.document.uri.scheme !== "file" ||
-            currentEditor.document.uri.fsPath !== this.currentTaskContext.absolutePath
+            currentEditor.document.uri.fsPath !== this.currentTaskContext.absolutePath ||
+            currentEditor.document.version !== this.currentTaskContext.documentVersion
         ) {
-            await this.setCodeState("error", FILE_CHANGED_MESSAGE);
-            return;
-        }
-
-        if (currentEditor.document.version !== this.currentTaskContext.documentVersion) {
             await this.setCodeState("error", FILE_CHANGED_MESSAGE);
             return;
         }
 
         await this.setCodeState("applying", APPLYING_MESSAGE);
 
-        const replaced = await this.runtime.replaceDocumentContent(
-            currentEditor,
-            this.currentTaskResult.updated_file_content,
-        );
-        if (!replaced) {
+        const verifiedFiles = this.currentTaskResult.verified_files ?? [];
+        if (verifiedFiles.length === 0) {
             await this.setCodeState("error", APPLY_FAILED_MESSAGE);
             return;
         }
 
-        const saved = await this.runtime.saveDocument(currentEditor.document);
-        if (!saved) {
+        const filesToApply = verifiedFiles
+            .map((item) => {
+                const absolutePath =
+                    item.file_path === this.currentTaskContext?.workspaceFilePath
+                        ? this.currentTaskContext.absolutePath
+                        : this.resolveAbsoluteWorkspacePath(item.file_path);
+                if (!absolutePath) {
+                    return null;
+                }
+                return {
+                    workspaceFilePath: item.file_path,
+                    absolutePath,
+                    content: item.content,
+                };
+            })
+            .filter((item): item is { workspaceFilePath: string; absolutePath: string; content: string } => {
+                return item !== null;
+            });
+        if (filesToApply.length !== verifiedFiles.length) {
             await this.setCodeState("error", APPLY_FAILED_MESSAGE);
             return;
         }
 
-        const eventPayload: CreateRawEventPayload = {
-            action_type: "modify",
-            file_path: this.currentTaskContext.workspaceFilePath,
-            code_snapshot: this.currentTaskResult.updated_file_content,
-            intent: this.currentTaskResult.intent,
-            reasoning: this.currentTaskResult.reasoning ?? null,
-            decision_alternatives: null,
-            session_id: this.currentTaskResult.session_id,
-            agent_step_id: this.currentTaskResult.agent_step_id,
-            line_range: null,
-            external_refs: [],
-        };
-
-        const eventResult = await this.apiClient.createEvent(eventPayload);
-        if (!eventResult.ok) {
-            await this.setCodeState("error", formatTaskError(eventResult));
+        const applied = await this.runtime.applyVerifiedFiles?.(filesToApply);
+        if (!applied) {
+            await this.setCodeState("error", APPLY_FAILED_MESSAGE);
             return;
         }
 
@@ -551,31 +578,40 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         const appliedResult = await this.apiClient.markCodingTaskApplied(
             this.currentTaskResult.task_id,
             {
-                event_id: eventResult.data.event_id,
+                applied_files: verifiedFiles.map((item) => ({
+                    file_path: item.file_path,
+                    content_hash: item.content_hash,
+                })),
             },
         );
         await this.refreshHistory(this.currentTaskResult.task_id);
+
+        if (!appliedResult.ok) {
+            await this.setCodeState("error", APPLY_HISTORY_FAILED_MESSAGE);
+            return;
+        }
+
+        const appliedStatus = this.codeHistoryDetail?.status;
+        if (appliedStatus === "applied_event_pending") {
+            await this.setCodeState("applied", APPLY_PENDING_MESSAGE);
+        } else if (appliedStatus === "applied_without_events") {
+            await this.setCodeState("applied", APPLY_WITHOUT_EVENTS_MESSAGE);
+        } else {
+            await this.setCodeState("applied", APPLY_SUCCESS_MESSAGE);
+        }
 
         const refreshResult = await this.apiClient.getEntityByLocation(
             this.currentTaskContext.workspaceFilePath,
             this.currentTaskContext.lineNumber,
         );
-
-        if (!appliedResult.ok) {
-            if (refreshResult.ok) {
-                await this.loadEntity(refreshResult.data.entity_id);
-            }
-            await this.setCodeState("error", APPLY_HISTORY_FAILED_MESSAGE);
-            return;
-        }
-
         if (refreshResult.ok) {
             await this.loadEntity(refreshResult.data.entity_id);
-            await this.setCodeState("applied", APPLY_SUCCESS_MESSAGE);
             return;
         }
 
-        await this.setCodeState("applied", APPLY_SUCCESS_NO_ENTITY_MESSAGE);
+        if (appliedStatus !== "applied_event_pending" && appliedStatus !== "applied_without_events") {
+            await this.setCodeState("applied", APPLY_SUCCESS_NO_ENTITY_MESSAGE);
+        }
     }
 
     private async refreshHistory(preferredTaskId?: string | null): Promise<void> {
@@ -586,7 +622,10 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         this.codeHistoryError = null;
         await this.postCodeState();
 
-        const historyResult = await this.apiClient.getCodingTaskHistory(20, controller.signal);
+        const historyResult = await this.apiClient.getCodingTaskHistory(
+            { limit: 20, offset: 0 },
+            controller.signal,
+        );
         if (this.currentHistoryAbortController !== controller || controller.signal.aborted) {
             return;
         }
@@ -598,15 +637,25 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
             return;
         }
 
+        const historyPage = Array.isArray(historyResult.data)
+            ? {
+                items: historyResult.data,
+                total: historyResult.data.length,
+                limit: historyResult.data.length,
+                offset: 0,
+                has_more: false,
+            }
+            : historyResult.data;
         const selectedTaskId = this.resolveSelectedHistoryTaskId(
-            historyResult.data,
+            historyPage.items,
             preferredTaskId,
         );
         this.selectedHistoryTaskId = selectedTaskId;
-        this.codeHistoryItems = historyResult.data.map((item) => {
+        this.codeHistoryItems = historyPage.items.map((item) => {
             return {
                 taskId: item.task_id,
                 targetFilePath: item.target_file_path,
+                userPrompt: item.user_prompt,
                 status: item.status,
                 createdAt: item.created_at,
                 updatedAt: item.updated_at,
@@ -660,6 +709,11 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
             prompt: activeDetail.userPrompt,
             contextFiles: activeDetail.contextFiles,
         });
+        this.pendingReplaySourceTaskId = null;
+        this.currentTaskLaunchMode = "new";
+        this.currentTaskSourceTaskId = null;
+        this.selectedProfileId = activeDetail.selectedProfileId;
+        this.requestedCapabilities = [...activeDetail.requestedCapabilities];
 
         const availability = this.getCodeAvailability();
         this.codeHistoryNotice =
@@ -667,6 +721,38 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
             availability.context.workspaceFilePath !== activeDetail.targetFilePath
                 ? HISTORY_REUSED_TARGET_MISMATCH_MESSAGE
                 : HISTORY_REUSED_MESSAGE;
+        await this.postCodeState();
+    }
+
+    private async replayHistoryTask(taskId: string): Promise<void> {
+        const detail = this.codeHistoryDetail;
+        if (!detail || detail.taskId !== taskId) {
+            await this.refreshHistory(taskId);
+        }
+        const activeDetail = this.codeHistoryDetail;
+        if (!activeDetail || activeDetail.taskId !== taskId) {
+            return;
+        }
+
+        const targetExists = this.resolveAbsoluteWorkspacePath(activeDetail.targetFilePath) !== null;
+        if (!targetExists) {
+            this.codeHistoryNotice = HISTORY_REPLAY_MISSING_TARGET_MESSAGE;
+            await this.postCodeState();
+            return;
+        }
+
+        await this.runtime.openWorkspaceFile?.(activeDetail.targetFilePath);
+        await this.postMessage({
+            type: "code:fillInputs",
+            prompt: activeDetail.userPrompt,
+            contextFiles: activeDetail.contextFiles,
+        });
+        this.pendingReplaySourceTaskId = activeDetail.taskId;
+        this.currentTaskLaunchMode = "replay";
+        this.currentTaskSourceTaskId = activeDetail.taskId;
+        this.selectedProfileId = activeDetail.selectedProfileId;
+        this.requestedCapabilities = [...activeDetail.requestedCapabilities];
+        this.codeHistoryNotice = HISTORY_REPLAY_READY_MESSAGE;
         await this.postCodeState();
     }
 
@@ -882,9 +968,14 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
 
     private async postCodeState(): Promise<void> {
         const availability = this.getCodeAvailability();
+        const launchMode =
+            this.pendingReplaySourceTaskId !== null ? "replay" : this.currentTaskLaunchMode;
+        const sourceTaskId = this.pendingReplaySourceTaskId ?? this.currentTaskSourceTaskId;
         const data: CodeViewModel = {
             filePath: availability.filePath,
             status: this.codeStatus,
+            launchMode,
+            sourceTaskId,
             transcriptText: this.codeTranscriptText,
             modelOutputText: this.codeModelOutputText,
             draftText: this.codeDraftText,
@@ -1073,16 +1164,30 @@ function toHistoryDetailViewModel(
         targetFilePath: detail.target_file_path,
         userPrompt: detail.user_prompt,
         contextFiles: detail.context_files,
+        editableFiles: detail.editable_files ?? [],
         status: detail.status,
         createdAt: detail.created_at,
         updatedAt: detail.updated_at,
         transcriptText: detail.steps.map((step) => formatStepTranscript(step)).join("\n"),
         modelOutputText: detail.model_output_text ?? "",
-        draftText: detail.verified_draft_content ?? "",
+        draftText:
+            (detail.verified_files ?? []).length > 0
+                ? (detail.verified_files ?? [])
+                    .map((item) => `${item.file_path}\n${item.content}`)
+                    .join("\n\n")
+                : detail.verified_draft_content ?? "",
+        launchMode: detail.launch_mode ?? "new",
+        sourceTaskId: detail.source_task_id ?? null,
+        selectedProfileId: detail.selected_profile_id ?? null,
+        requestedCapabilities: detail.requested_capabilities ?? [],
+        appliedEvents: detail.applied_events ?? [],
         intent: detail.intent ?? null,
         reasoning: detail.reasoning ?? null,
         lastError: detail.last_error ?? null,
-        appliedEventId: detail.applied_event_id ?? null,
+        appliedEventId:
+            (detail.applied_events ?? []).find((item) => item.event_id)?.event_id ??
+            detail.applied_event_id ??
+            null,
     };
 }
 
@@ -1090,16 +1195,21 @@ function validateDraftResult(
     result: CodingTaskDraftResult,
     originalContent: string,
 ): string | null {
-    if (!result.updated_file_content.trim()) {
+    const primaryDraft = result.updated_file_content ?? result.verified_files?.[0]?.content ?? "";
+    if (!primaryDraft.trim()) {
         return "Task returned an empty draft.";
     }
-    if (result.updated_file_content === originalContent) {
+    if (primaryDraft === originalContent) {
         return "Task did not change the target file.";
     }
     if (!result.intent.trim()) {
         return "Task returned an empty intent.";
     }
     return null;
+}
+
+function resolveDraftText(result: CodingTaskDraftResult): string {
+    return result.updated_file_content ?? result.verified_files?.[0]?.content ?? "";
 }
 
 function formatTaskError(result: ApiResult<unknown>): string {

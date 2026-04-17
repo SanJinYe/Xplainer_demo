@@ -115,15 +115,23 @@ CREATE TABLE IF NOT EXISTS coding_tasks (
     target_file_path TEXT NOT NULL,
     user_prompt TEXT NOT NULL,
     context_files TEXT NOT NULL,
+    editable_files TEXT NOT NULL DEFAULT '[]',
     status TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     model_output_text TEXT,
     verified_draft_content TEXT,
+    verified_files TEXT NOT NULL DEFAULT '[]',
     intent TEXT,
     reasoning TEXT,
     last_error TEXT,
-    applied_event_id TEXT
+    applied_event_id TEXT,
+    applied_events TEXT NOT NULL DEFAULT '[]',
+    launch_mode TEXT,
+    source_task_id TEXT,
+    selected_profile_id TEXT,
+    requested_capabilities TEXT NOT NULL DEFAULT '[]',
+    applied_event_retry_count INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -171,12 +179,40 @@ SCHEMA_SQL = "\n".join(
     ]
 )
 
+CODING_TASKS_EXTRA_COLUMNS = {
+    "editable_files": "ALTER TABLE coding_tasks ADD COLUMN editable_files TEXT NOT NULL DEFAULT '[]'",
+    "verified_files": "ALTER TABLE coding_tasks ADD COLUMN verified_files TEXT NOT NULL DEFAULT '[]'",
+    "applied_events": "ALTER TABLE coding_tasks ADD COLUMN applied_events TEXT NOT NULL DEFAULT '[]'",
+    "launch_mode": "ALTER TABLE coding_tasks ADD COLUMN launch_mode TEXT",
+    "source_task_id": "ALTER TABLE coding_tasks ADD COLUMN source_task_id TEXT",
+    "selected_profile_id": "ALTER TABLE coding_tasks ADD COLUMN selected_profile_id TEXT",
+    "requested_capabilities": (
+        "ALTER TABLE coding_tasks ADD COLUMN requested_capabilities TEXT NOT NULL DEFAULT '[]'"
+    ),
+    "applied_event_retry_count": (
+        "ALTER TABLE coding_tasks ADD COLUMN applied_event_retry_count INTEGER NOT NULL DEFAULT 0"
+    ),
+}
+
 
 async def run_migrations(connection: aiosqlite.Connection) -> None:
     """Create all required SQLite tables and indexes."""
 
     await connection.executescript(SCHEMA_SQL)
+    await _ensure_coding_task_columns(connection)
     await connection.commit()
+
+
+async def _ensure_coding_task_columns(connection: aiosqlite.Connection) -> None:
+    cursor = await connection.execute("PRAGMA table_info(coding_tasks)")
+    rows = await cursor.fetchall()
+    await cursor.close()
+
+    existing_columns = {str(row["name"]) for row in rows}
+    for column_name, statement in CODING_TASKS_EXTRA_COLUMNS.items():
+        if column_name in existing_columns:
+            continue
+        await connection.execute(statement)
 
 
 __all__ = [

@@ -221,6 +221,129 @@
         input {
             min-height: 38px;
         }
+
+        .code-shell {
+            gap: 10px;
+        }
+
+        .code-meta {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            align-items: flex-start;
+        }
+
+        .code-meta-copy {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            min-width: 0;
+        }
+
+        .code-file-path {
+            word-break: break-word;
+        }
+
+        .eyebrow {
+            font-size: 0.85em;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+
+        .code-meta-badges {
+            justify-content: flex-end;
+        }
+
+        .badge-button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border: 1px solid var(--vscode-badge-background);
+            background: transparent;
+            color: inherit;
+            border-radius: 999px;
+            padding: 2px 8px;
+            cursor: pointer;
+            font: inherit;
+        }
+
+        .badge-button:hover {
+            border-color: var(--vscode-button-background);
+        }
+
+        .warning-badge {
+            background: var(--vscode-inputValidation-warningBackground, var(--vscode-badge-background));
+            color: var(--vscode-inputValidation-warningForeground, var(--vscode-badge-foreground));
+        }
+
+        .inline-notice {
+            padding: 8px 10px;
+            border-radius: 6px;
+            border: 1px solid var(--vscode-list-hoverBackground);
+            background: var(--vscode-editor-inactiveSelectionBackground, transparent);
+        }
+
+        .collapsible {
+            padding: 0;
+            overflow: hidden;
+        }
+
+        .collapsible > summary {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding: 10px 12px;
+            cursor: pointer;
+            list-style: none;
+            user-select: none;
+        }
+
+        .collapsible > summary::-webkit-details-marker {
+            display: none;
+        }
+
+        .summary-main {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 0;
+        }
+
+        .summary-title {
+            font-weight: 600;
+        }
+
+        .summary-hint {
+            min-width: 0;
+            word-break: break-word;
+            text-align: right;
+        }
+
+        .collapsible-body {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            padding: 0 12px 12px;
+        }
+
+        .history-task-button p {
+            margin-top: 6px;
+        }
+
+        .history-task-subtitle {
+            margin-top: 4px;
+        }
+
+        .summary-block {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .panel-caption {
+            font-size: 0.92em;
+        }
     </style>
 </head>
 <body>
@@ -287,16 +410,20 @@
         </section>
 
         <section id="code-panel" class="panel hidden">
-            <section class="panel-box">
-                <h3>Target File</h3>
-                <p id="code-file-path" class="muted">No file selected.</p>
-            </section>
-
-            <section class="panel-box">
-                <h3>Readonly Context Files</h3>
-                <input id="context-file-1" placeholder="relative/path/to/context_file.py" />
-                <input id="context-file-2" placeholder="relative/path/to/another_context.py" />
-                <p class="muted">At most 2 files. These files are view-only and never edited.</p>
+            <section class="panel-box code-shell">
+                <div class="code-meta">
+                    <div class="code-meta-copy">
+                        <p class="eyebrow muted">Target File</p>
+                        <p id="code-file-path" class="muted code-file-path">No file selected.</p>
+                    </div>
+                    <div class="row code-meta-badges">
+                        <span id="code-status-badge" class="badge">idle</span>
+                        <button id="code-lineage-badge" class="badge-button hidden" type="button">
+                            ↺ replay
+                        </button>
+                    </div>
+                </div>
+                <p id="code-status" class="muted"></p>
             </section>
 
             <section class="panel-box">
@@ -307,60 +434,139 @@
                     <button id="cancel-button" class="action-button" type="button">Cancel</button>
                     <button id="apply-button" class="action-button" type="button">Apply</button>
                 </div>
-                <p id="code-status" class="muted"></p>
+                <p id="code-apply-hint" class="muted hidden">Draft ready. Preview if needed before Apply.</p>
             </section>
 
-            <section class="panel-box">
-                <h3>Step Transcript</h3>
-                <pre id="code-transcript"></pre>
-            </section>
-
-            <section class="panel-box">
-                <h3>Model Output</h3>
-                <pre id="code-model-output"></pre>
-            </section>
-
-            <section class="panel-box">
-                <h3>Verified Draft</h3>
-                <pre id="code-draft"></pre>
-            </section>
-
-            <section class="panel-box">
-                <h3>Recent Tasks</h3>
-                <p id="history-loading" class="muted hidden">Loading recent tasks...</p>
-                <p id="history-error" class="muted hidden"></p>
-                <p id="history-notice" class="muted hidden"></p>
-                <p id="history-empty" class="muted hidden">No tasks yet.</p>
-                <ul id="history-list" class="related-list"></ul>
-            </section>
-
-            <section class="panel-box">
-                <div class="row">
-                    <h3>History Detail</h3>
-                    <button id="reuse-history-button" class="action-button" type="button" disabled>
-                        Reuse Prompt/Context
-                    </button>
+            <details id="advanced-panel" class="panel-box collapsible">
+                <summary>
+                    <div class="summary-main">
+                        <span class="summary-title">Advanced</span>
+                    </div>
+                    <span id="advanced-summary" class="summary-hint muted">Context (0/2)</span>
+                </summary>
+                <div class="collapsible-body">
+                    <input id="context-file-1" placeholder="relative/path/to/context_file.py" />
+                    <input id="context-file-2" placeholder="relative/path/to/another_context.py" />
+                    <p class="muted panel-caption">At most 2 files. These files are view-only and never edited.</p>
                 </div>
-                <p id="history-detail-empty" class="muted">Select a recent task to inspect it.</p>
-                <div id="history-detail" class="hidden">
-                    <p id="history-detail-meta" class="muted"></p>
-                    <p id="history-detail-updated" class="muted"></p>
-                    <h4>Prompt</h4>
-                    <pre id="history-detail-prompt"></pre>
-                    <h4>Context Files</h4>
-                    <pre id="history-detail-context"></pre>
-                    <h4>Step Transcript</h4>
-                    <pre id="history-detail-transcript"></pre>
-                    <h4>Model Output</h4>
-                    <pre id="history-detail-model-output"></pre>
-                    <h4>Verified Draft</h4>
-                    <pre id="history-detail-draft"></pre>
-                    <h4>Intent / Reasoning</h4>
-                    <pre id="history-detail-intent"></pre>
-                    <h4>Apply Result</h4>
-                    <pre id="history-detail-apply"></pre>
+            </details>
+
+            <details id="working-panel" class="panel-box collapsible hidden">
+                <summary>
+                    <div class="summary-main">
+                        <span class="summary-title">Working</span>
+                        <span id="working-warning" class="badge warning-badge hidden">Issue</span>
+                    </div>
+                    <span id="working-summary" class="summary-hint muted"></span>
+                </summary>
+                <div class="collapsible-body">
+                    <pre id="code-model-output"></pre>
                 </div>
-            </section>
+            </details>
+
+            <details id="preview-panel" class="panel-box collapsible hidden">
+                <summary>
+                    <div class="summary-main">
+                        <span class="summary-title">Preview draft</span>
+                    </div>
+                    <span id="preview-summary" class="summary-hint muted"></span>
+                </summary>
+                <div class="collapsible-body">
+                    <pre id="code-draft"></pre>
+                </div>
+            </details>
+
+            <details id="technical-panel" class="panel-box collapsible hidden">
+                <summary>
+                    <div class="summary-main">
+                        <span class="summary-title">Technical details</span>
+                    </div>
+                    <span class="summary-hint muted">Transcript</span>
+                </summary>
+                <div class="collapsible-body">
+                    <div class="summary-block">
+                        <h4>Step Transcript</h4>
+                        <pre id="code-transcript"></pre>
+                    </div>
+                </div>
+            </details>
+
+            <details id="history-panel" class="panel-box collapsible">
+                <summary>
+                    <div class="summary-main">
+                        <span class="summary-title">History</span>
+                    </div>
+                    <span id="history-summary" class="summary-hint muted">Recent Tasks</span>
+                </summary>
+                <div class="collapsible-body">
+                    <p id="history-loading" class="muted hidden">Loading recent tasks...</p>
+                    <p id="history-error" class="muted hidden"></p>
+                    <p id="history-notice" class="muted inline-notice hidden"></p>
+                    <p id="history-empty" class="muted hidden">No tasks yet.</p>
+                    <ul id="history-list" class="related-list"></ul>
+
+                    <div class="summary-block">
+                        <div class="row">
+                            <h3>History Detail</h3>
+                            <button id="reuse-history-button" class="action-button" type="button" disabled>
+                                Reuse Prompt/Context
+                            </button>
+                            <button id="replay-history-button" class="action-button" type="button" disabled>
+                                Replay Task
+                            </button>
+                        </div>
+                        <p id="history-detail-empty" class="muted">Select a recent task to inspect it.</p>
+                        <div id="history-detail" class="hidden">
+                            <p id="history-detail-meta" class="muted"></p>
+                            <p id="history-detail-updated" class="muted"></p>
+                            <h4>Prompt</h4>
+                            <pre id="history-detail-prompt"></pre>
+                            <div id="history-detail-intent-block" class="hidden">
+                                <h4>Intent</h4>
+                                <pre id="history-detail-intent"></pre>
+                            </div>
+                            <h4>Context Files</h4>
+                            <pre id="history-detail-context"></pre>
+                            <h4>Apply Result</h4>
+                            <pre id="history-detail-apply"></pre>
+                            <div id="history-detail-error-block" class="hidden">
+                                <h4>Last Error</h4>
+                                <pre id="history-detail-last-error"></pre>
+                            </div>
+                            <details id="history-detail-technical-panel" class="panel-box collapsible">
+                                <summary>
+                                    <div class="summary-main">
+                                        <span class="summary-title">Technical details</span>
+                                    </div>
+                                    <span class="summary-hint muted">Transcript, model output, draft</span>
+                                </summary>
+                                <div class="collapsible-body">
+                                    <div class="summary-block">
+                                        <h4>Step Transcript</h4>
+                                        <pre id="history-detail-transcript"></pre>
+                                    </div>
+                                    <div class="summary-block">
+                                        <h4>Model Output</h4>
+                                        <pre id="history-detail-model-output"></pre>
+                                    </div>
+                                    <div class="summary-block">
+                                        <h4>Verified Draft</h4>
+                                        <pre id="history-detail-draft"></pre>
+                                    </div>
+                                    <div class="summary-block">
+                                        <h4>Reasoning</h4>
+                                        <pre id="history-detail-reasoning"></pre>
+                                    </div>
+                                    <div class="summary-block">
+                                        <h4>Internals</h4>
+                                        <pre id="history-detail-internals"></pre>
+                                    </div>
+                                </div>
+                            </details>
+                        </div>
+                    </div>
+                </div>
+            </details>
         </section>
     </div>
 
@@ -385,14 +591,32 @@
         const cancelButton = document.getElementById("cancel-button");
         const applyButton = document.getElementById("apply-button");
         const reuseHistoryButton = document.getElementById("reuse-history-button");
+        const replayHistoryButton = document.getElementById("replay-history-button");
+        const lineageBadgeButton = document.getElementById("code-lineage-badge");
+        const advancedPanel = document.getElementById("advanced-panel");
+        const workingPanel = document.getElementById("working-panel");
+        const previewPanel = document.getElementById("preview-panel");
+        const technicalPanel = document.getElementById("technical-panel");
+        const historyPanel = document.getElementById("history-panel");
+        const historyDetailTechnicalPanel = document.getElementById("history-detail-technical-panel");
 
         let currentMode = "explain";
         let latestCodeState = {
+            status: "idle",
+            launchMode: "new",
+            sourceTaskId: null,
             canRun: false,
             canCancel: false,
             canApply: false,
             historyItems: [],
             historyDetail: null,
+        };
+        const transientToggleSync = new WeakSet();
+        const panelState = {
+            working: { lastStatus: null, userOverride: null },
+            history: { lastStatus: null, userOverride: null },
+            historyTechnicalTaskId: null,
+            historyNoticeOverride: null,
         };
 
         retryButton.addEventListener("click", () => {
@@ -423,6 +647,14 @@
             vscode.postMessage({ type: "applyTask" });
         });
 
+        contextFile1.addEventListener("input", () => {
+            renderAdvancedSummary();
+        });
+
+        contextFile2.addEventListener("input", () => {
+            renderAdvancedSummary();
+        });
+
         reuseHistoryButton.addEventListener("click", () => {
             if (!latestCodeState.historyDetail) {
                 return;
@@ -431,6 +663,53 @@
                 type: "reuseHistoryTask",
                 taskId: latestCodeState.historyDetail.taskId,
             });
+        });
+
+        replayHistoryButton.addEventListener("click", () => {
+            if (!latestCodeState.historyDetail) {
+                return;
+            }
+            vscode.postMessage({
+                type: "replayHistoryTask",
+                taskId: latestCodeState.historyDetail.taskId,
+            });
+        });
+
+        lineageBadgeButton.addEventListener("click", () => {
+            if (latestCodeState.launchMode === "new" || !latestCodeState.sourceTaskId) {
+                return;
+            }
+            panelState.history.userOverride = true;
+            setPanelOpen(historyPanel, true);
+
+            const sourceTask = latestCodeState.historyItems.find((item) => {
+                return item.taskId === latestCodeState.sourceTaskId;
+            });
+            if (!sourceTask) {
+                panelState.historyNoticeOverride = "Source task is outside the current history slice.";
+                renderHistory(latestCodeState);
+                return;
+            }
+
+            panelState.historyNoticeOverride = null;
+            vscode.postMessage({
+                type: "selectHistoryTask",
+                taskId: sourceTask.taskId,
+            });
+        });
+
+        workingPanel.addEventListener("toggle", () => {
+            if (transientToggleSync.has(workingPanel)) {
+                return;
+            }
+            panelState.working.userOverride = workingPanel.open;
+        });
+
+        historyPanel.addEventListener("toggle", () => {
+            if (transientToggleSync.has(historyPanel)) {
+                return;
+            }
+            panelState.history.userOverride = historyPanel.open;
         });
 
         window.addEventListener("message", (event) => {
@@ -446,6 +725,7 @@
                     promptInput.value = message.prompt || "";
                     contextFile1.value = message.contextFiles?.[0] || "";
                     contextFile2.value = message.contextFiles?.[1] || "";
+                    renderAdvancedSummary();
                     break;
                 case "state:empty":
                     showEmpty(message.message);
@@ -465,6 +745,7 @@
         });
 
         document.addEventListener("DOMContentLoaded", () => {
+            renderAdvancedSummary();
             vscode.postMessage({ type: "ready" });
         });
 
@@ -481,12 +762,43 @@
             latestCodeState = data;
             document.getElementById("code-file-path").textContent = data.filePath || "No file selected.";
             document.getElementById("code-status").textContent = data.message || "";
+            const statusBadge = document.getElementById("code-status-badge");
+            statusBadge.textContent = formatStatusLabel(data.status);
+            const workingWarning = document.getElementById("working-warning");
+            workingWarning.classList.toggle("hidden", data.status !== "error");
+            lineageBadgeButton.classList.toggle(
+                "hidden",
+                data.launchMode === "new" || !data.sourceTaskId,
+            );
             document.getElementById("code-transcript").textContent = data.transcriptText || "";
             document.getElementById("code-model-output").textContent = data.modelOutputText || "";
             document.getElementById("code-draft").textContent = data.draftText || "";
+            renderAdvancedSummary();
+            const applyHint = document.getElementById("code-apply-hint");
+            applyHint.classList.toggle("hidden", !(data.status === "ready_to_apply" && data.draftText));
+            const hasModelOutput = Boolean(data.modelOutputText);
+            workingPanel.classList.toggle(
+                "hidden",
+                !hasModelOutput && data.status !== "running" && data.status !== "error",
+            );
+            document.getElementById("working-summary").textContent =
+                data.status === "running"
+                    ? "Streaming model output..."
+                    : data.status === "error"
+                        ? (data.message || "Latest task failed.")
+                        : hasModelOutput
+                            ? "Latest model output"
+                            : "No model output yet.";
+            document.getElementById("code-model-output").textContent =
+                data.modelOutputText || (data.status === "running" ? "Waiting for model output..." : "<empty>");
+            previewPanel.classList.toggle("hidden", !data.draftText);
+            document.getElementById("preview-summary").textContent =
+                data.draftText ? "Verified draft available" : "";
+            technicalPanel.classList.toggle("hidden", !data.transcriptText);
             runButton.disabled = !data.canRun;
             cancelButton.disabled = !data.canCancel;
             applyButton.disabled = !data.canApply;
+            applyStateAwarePanels(data.status);
             renderHistory(data);
         }
 
@@ -496,12 +808,15 @@
             const notice = document.getElementById("history-notice");
             const empty = document.getElementById("history-empty");
             const list = document.getElementById("history-list");
+            document.getElementById("history-summary").textContent =
+                data.historyItems.length > 0 ? `${data.historyItems.length} task(s)` : "Recent Tasks";
 
             loading.classList.toggle("hidden", !data.historyLoading);
             error.textContent = data.historyError || "";
             error.classList.toggle("hidden", !data.historyError);
-            notice.textContent = data.historyNotice || "";
-            notice.classList.toggle("hidden", !data.historyNotice);
+            const effectiveNotice = data.historyNotice || panelState.historyNoticeOverride || "";
+            notice.textContent = effectiveNotice;
+            notice.classList.toggle("hidden", !effectiveNotice);
             empty.classList.toggle(
                 "hidden",
                 data.historyLoading || Boolean(data.historyError) || data.historyItems.length > 0,
@@ -515,12 +830,14 @@
                 button.className = `history-task-button${item.selected ? " active" : ""}`;
                 button.innerHTML = `
                     <div class="row">
-                        <span class="badge">${escapeHtml(item.status)}</span>
+                        <span class="badge">${escapeHtml(formatStatusLabel(item.status))}</span>
+                        <span>${escapeHtml(toPromptPreview(item.userPrompt))}</span>
                         <span class="muted">${escapeHtml(item.updatedAt)}</span>
                     </div>
-                    <p>${escapeHtml(item.targetFilePath)}</p>
+                    <p class="muted history-task-subtitle">${escapeHtml(pathBasename(item.targetFilePath))}</p>
                 `;
                 button.addEventListener("click", () => {
+                    panelState.historyNoticeOverride = null;
                     vscode.postMessage({ type: "selectHistoryTask", taskId: item.taskId });
                 });
                 li.appendChild(button);
@@ -531,15 +848,26 @@
             document.getElementById("history-detail-empty").classList.toggle("hidden", Boolean(detail));
             document.getElementById("history-detail").classList.toggle("hidden", !detail);
             reuseHistoryButton.disabled = !detail;
+            replayHistoryButton.disabled = !detail;
             if (!detail) {
+                panelState.historyTechnicalTaskId = null;
+                setPanelOpen(historyDetailTechnicalPanel, false);
                 return;
             }
 
+            if (panelState.historyTechnicalTaskId !== detail.taskId) {
+                panelState.historyTechnicalTaskId = detail.taskId;
+                setPanelOpen(historyDetailTechnicalPanel, false);
+            }
+
             document.getElementById("history-detail-meta").textContent =
-                `${detail.targetFilePath} - ${detail.status}`;
+                `${detail.targetFilePath} - ${formatStatusLabel(detail.status)}`;
             document.getElementById("history-detail-updated").textContent =
                 `Created ${detail.createdAt} | Updated ${detail.updatedAt}`;
             document.getElementById("history-detail-prompt").textContent = detail.userPrompt || "";
+            const intentBlock = document.getElementById("history-detail-intent-block");
+            intentBlock.classList.toggle("hidden", !detail.intent);
+            document.getElementById("history-detail-intent").textContent = detail.intent || "";
             document.getElementById("history-detail-context").textContent =
                 detail.contextFiles.length > 0 ? detail.contextFiles.join("\n") : "<none>";
             document.getElementById("history-detail-transcript").textContent =
@@ -548,17 +876,90 @@
                 detail.modelOutputText || "<empty>";
             document.getElementById("history-detail-draft").textContent =
                 detail.draftText || "<empty>";
-            document.getElementById("history-detail-intent").textContent = [
-                detail.intent ? `Intent: ${detail.intent}` : "Intent: <empty>",
-                detail.reasoning ? `Reasoning: ${detail.reasoning}` : "Reasoning: <empty>",
-                detail.lastError ? `Last error: ${detail.lastError}` : null,
-            ]
-                .filter(Boolean)
-                .join("\n");
-            document.getElementById("history-detail-apply").textContent =
-                detail.appliedEventId
-                    ? `Applied event: ${detail.appliedEventId}`
-                    : "Not applied yet.";
+            document.getElementById("history-detail-reasoning").textContent =
+                detail.reasoning || "<empty>";
+            document.getElementById("history-detail-internals").textContent = [
+                `Launch mode: ${detail.launchMode}`,
+                detail.sourceTaskId ? `Source task: ${detail.sourceTaskId}` : "Source task: <none>",
+                detail.selectedProfileId
+                    ? `Profile: ${detail.selectedProfileId}`
+                    : "Profile: <none>",
+                detail.requestedCapabilities.length > 0
+                    ? `Capabilities: ${detail.requestedCapabilities.join(", ")}`
+                    : "Capabilities: <none>",
+            ].join("\n");
+            document.getElementById("history-detail-apply").textContent = formatApplyResult(detail);
+            const errorBlock = document.getElementById("history-detail-error-block");
+            errorBlock.classList.toggle("hidden", !detail.lastError);
+            document.getElementById("history-detail-last-error").textContent =
+                detail.lastError || "";
+        }
+
+        function applyStateAwarePanels(status) {
+            syncStateAwarePanel(workingPanel, panelState.working, status === "running", status);
+            syncStateAwarePanel(historyPanel, panelState.history, status === "idle", status);
+        }
+
+        function syncStateAwarePanel(panel, state, defaultOpen, status) {
+            if (state.lastStatus !== status) {
+                state.lastStatus = status;
+                state.userOverride = null;
+                setPanelOpen(panel, defaultOpen);
+                return;
+            }
+            if (state.userOverride !== null) {
+                setPanelOpen(panel, state.userOverride);
+                return;
+            }
+            setPanelOpen(panel, defaultOpen);
+        }
+
+        function setPanelOpen(panel, open) {
+            transientToggleSync.add(panel);
+            panel.open = open;
+            setTimeout(() => transientToggleSync.delete(panel), 0);
+        }
+
+        function countFilledContextFiles() {
+            return [contextFile1.value, contextFile2.value].filter((value) => {
+                return Boolean(value && value.trim());
+            }).length;
+        }
+
+        function renderAdvancedSummary() {
+            document.getElementById("advanced-summary").textContent =
+                `Context (${countFilledContextFiles()}/2)`;
+        }
+
+        function toPromptPreview(prompt) {
+            const collapsed = String(prompt || "").replace(/\s+/g, " ").trim();
+            if (collapsed.length <= 48) {
+                return collapsed || "<empty>";
+            }
+            return `${collapsed.slice(0, 48)}...`;
+        }
+
+        function pathBasename(value) {
+            const parts = String(value || "").split(/[\\/]/).filter(Boolean);
+            return parts[parts.length - 1] || value || "<unknown>";
+        }
+
+        function formatStatusLabel(value) {
+            const normalized = String(value || "").replaceAll("_", " ");
+            return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+        }
+
+        function formatApplyResult(detail) {
+            if (detail.appliedEvents?.length > 0) {
+                return detail.appliedEvents.map((item) => {
+                    const eventId = item.event_id || "<none>";
+                    return `${item.file_path}: ${item.status} (${eventId})`;
+                }).join("\n");
+            }
+            if (detail.appliedEventId) {
+                return `Applied event: ${detail.appliedEventId}`;
+            }
+            return "Not applied yet.";
         }
 
         function hideAllStates() {

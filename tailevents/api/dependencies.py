@@ -21,7 +21,12 @@ from tailevents.ingestion import GraphUpdateHook, IngestionPipeline
 from tailevents.indexer import Indexer
 from tailevents.models.entity import CodeEntity
 from tailevents.models.event import RawEvent, TailEvent
-from tailevents.models.protocols import DocRetrieverProtocol, LLMClientProtocol
+from tailevents.models.protocols import (
+    CodingProfileRegistryProtocol,
+    DocRetrieverProtocol,
+    LLMClientProtocol,
+)
+from tailevents.profiles import InMemoryCodingProfileRegistry
 from tailevents.query import QueryRouter
 from tailevents.storage import (
     SQLiteCodingTaskStore,
@@ -54,6 +59,7 @@ class AppContainer:
     query_router: QueryRouter
     graph_service: GraphServiceStub
     ingestion_pipeline: IngestionPipeline
+    profile_registry: CodingProfileRegistryProtocol
     coding_task_service: CodingTaskService
 
     async def ingest_raw_event(self, raw_event: RawEvent) -> TailEvent:
@@ -262,6 +268,7 @@ def build_lifespan(
             indexer=indexer,
             hooks=[GraphUpdateHook(graph_service)],
         )
+        profile_registry = InMemoryCodingProfileRegistry(app_settings)
         baseline_service = BaselineOnboardingService(
             event_store=event_store,
             ingestion_pipeline=ingestion_pipeline,
@@ -270,6 +277,8 @@ def build_lifespan(
             llm_client=active_llm_client,
             task_store=task_store,
             step_store=task_step_store,
+            ingestion_pipeline=ingestion_pipeline,
+            profile_registry=profile_registry,
         )
 
         container = AppContainer(
@@ -289,6 +298,7 @@ def build_lifespan(
             query_router=query_router,
             graph_service=graph_service,
             ingestion_pipeline=ingestion_pipeline,
+            profile_registry=profile_registry,
             coding_task_service=coding_task_service,
         )
         app.state.db_manager = db_manager
@@ -393,6 +403,12 @@ def get_coding_task_service(
     return container.coding_task_service
 
 
+def get_profile_registry(
+    container: AppContainer = Depends(get_container),
+) -> CodingProfileRegistryProtocol:
+    return container.profile_registry
+
+
 def _resolve_llm_model_name(settings: Settings) -> str:
     backend = settings.llm_backend.lower()
     if backend == "ollama":
@@ -418,6 +434,7 @@ __all__ = [
     "get_graph_service",
     "get_ingestion_pipeline",
     "get_indexer",
+    "get_profile_registry",
     "get_query_router",
     "get_relation_store",
     "get_settings_dependency",

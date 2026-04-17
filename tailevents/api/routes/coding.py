@@ -2,6 +2,7 @@
 
 import json
 from typing import AsyncIterator
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -18,7 +19,7 @@ from tailevents.models.task import (
     CodingTaskCreateRequest,
     CodingTaskCreateResponse,
     CodingTaskHistoryDetail,
-    CodingTaskHistoryItem,
+    CodingTaskHistoryListResponse,
     CodingTaskToolResultRequest,
 )
 
@@ -37,12 +38,22 @@ async def create_coding_task(
         raise HTTPException(status_code=422, detail=str(error)) from error
 
 
-@router.get("/history", response_model=list[CodingTaskHistoryItem])
+@router.get("/history", response_model=CodingTaskHistoryListResponse)
 async def list_coding_task_history(
     limit: int = 20,
+    offset: int = 0,
+    task_status: Optional[str] = None,
+    target_file_path: Optional[str] = None,
     service: CodingTaskService = Depends(get_coding_task_service),
-) -> list[CodingTaskHistoryItem]:
-    return await service.list_history(limit=limit)
+) -> CodingTaskHistoryListResponse:
+    normalized_limit = max(1, min(limit, 100))
+    normalized_offset = max(0, offset)
+    return await service.list_history(
+        limit=normalized_limit,
+        offset=normalized_offset,
+        status=task_status,
+        target_file_path=target_file_path,
+    )
 
 
 @router.get("/{task_id}/stream")
@@ -96,6 +107,19 @@ async def mark_coding_task_applied(
 ) -> None:
     try:
         await service.mark_applied(task_id, request)
+    except CodingTaskNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except CodingTaskValidationError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@router.post("/{task_id}/retry-events", status_code=status.HTTP_204_NO_CONTENT)
+async def retry_coding_task_event_writes(
+    task_id: str,
+    service: CodingTaskService = Depends(get_coding_task_service),
+) -> None:
+    try:
+        await service.retry_event_writes(task_id)
     except CodingTaskNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except CodingTaskValidationError as error:

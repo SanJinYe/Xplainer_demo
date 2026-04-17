@@ -14,7 +14,15 @@ export type BackendCodingTaskStatus =
     | "ready_to_apply"
     | "cancelled"
     | "failed"
-    | "applied";
+    | "applied"
+    | "applied_event_pending"
+    | "applied_without_events";
+export type CodingTaskLaunchMode = "new" | "replay";
+export type CodingTaskRequestedCapability =
+    | "repo_observe"
+    | "multi_file"
+    | "mcp"
+    | "skills";
 export type CodeTaskStatus =
     | "idle"
     | "running"
@@ -131,6 +139,11 @@ export interface CodingTaskCreateRequestPayload {
     target_file_version: number;
     user_prompt: string;
     context_files: string[];
+    editable_files?: EditableFileReferencePayload[];
+    launch_mode?: CodingTaskLaunchMode;
+    source_task_id?: string | null;
+    selected_profile_id?: string | null;
+    requested_capabilities?: CodingTaskRequestedCapability[];
 }
 
 export interface CodingTaskCreateResponse {
@@ -174,7 +187,8 @@ export interface CodingTaskToolResultPayload {
 
 export interface CodingTaskDraftResult {
     task_id: string;
-    updated_file_content: string;
+    verified_files?: BackendVerifiedFileDraft[];
+    updated_file_content?: string | null;
     intent: string;
     reasoning?: string | null;
     session_id: string;
@@ -183,15 +197,25 @@ export interface CodingTaskDraftResult {
 }
 
 export interface CodingTaskAppliedPayload {
-    event_id: string;
+    applied_files?: AppliedFileConfirmationPayload[];
+    event_id?: string;
 }
 
 export interface BackendCodingTaskHistoryItem {
     task_id: string;
     target_file_path: string;
+    user_prompt: string;
     status: BackendCodingTaskStatus;
     created_at: string;
     updated_at: string;
+}
+
+export interface BackendCodingTaskHistoryPage {
+    items: BackendCodingTaskHistoryItem[];
+    total: number;
+    limit: number;
+    offset: number;
+    has_more: boolean;
 }
 
 export interface BackendCodingTaskHistoryDetail {
@@ -199,16 +223,89 @@ export interface BackendCodingTaskHistoryDetail {
     target_file_path: string;
     user_prompt: string;
     context_files: string[];
+    editable_files?: string[];
     status: BackendCodingTaskStatus;
     created_at: string;
     updated_at: string;
     steps: BackendTaskStepEvent[];
     model_output_text?: string | null;
     verified_draft_content?: string | null;
+    verified_files?: BackendVerifiedFileDraft[];
     intent?: string | null;
     reasoning?: string | null;
     last_error?: string | null;
     applied_event_id?: string | null;
+    applied_events?: BackendAppliedEventRecord[];
+    launch_mode?: CodingTaskLaunchMode;
+    source_task_id?: string | null;
+    selected_profile_id?: string | null;
+    requested_capabilities?: CodingTaskRequestedCapability[];
+}
+
+export interface EditableFileReferencePayload {
+    file_path: string;
+    document_version: number;
+}
+
+export interface AppliedFileConfirmationPayload {
+    file_path: string;
+    content_hash: string;
+}
+
+export interface BackendAppliedEventRecord {
+    file_path: string;
+    event_id?: string | null;
+    status: "pending" | "written" | "failed";
+    last_error?: string | null;
+}
+
+export interface BackendVerifiedFileDraft {
+    file_path: string;
+    content: string;
+    content_hash: string;
+    original_content_hash: string;
+    original_document_version?: number | null;
+}
+
+export interface CodingProfileSyncItemPayload {
+    profile_id: string;
+    label: string;
+    backend: string;
+    model: string;
+    is_default: boolean;
+    api_key?: string | null;
+}
+
+export interface CodingProfilesSyncRequestPayload {
+    profiles: CodingProfileSyncItemPayload[];
+}
+
+export interface BackendCodingProfileStatusItem {
+    profile_id: string;
+    label: string;
+    backend: string;
+    model: string;
+    source: "sync" | "env_fallback";
+    has_key: boolean;
+    is_default: boolean;
+    selectable: boolean;
+    reason?: string | null;
+}
+
+export interface BackendCodingProfilesStatusResponse {
+    profiles: BackendCodingProfileStatusItem[];
+}
+
+export interface BackendCodingCapabilityState {
+    available: boolean;
+    reason?: string | null;
+}
+
+export interface BackendCodingCapabilitiesResponse {
+    repo_observe: BackendCodingCapabilityState;
+    multi_file: BackendCodingCapabilityState;
+    mcp: BackendCodingCapabilityState;
+    skills: BackendCodingCapabilityState;
 }
 
 export interface BackendRelatedEntity {
@@ -361,6 +458,7 @@ export interface SidebarViewModel {
 export interface CodingTaskHistoryItemViewModel {
     taskId: string;
     targetFilePath: string;
+    userPrompt: string;
     status: BackendCodingTaskStatus;
     createdAt: string;
     updatedAt: string;
@@ -372,12 +470,18 @@ export interface CodingTaskHistoryDetailViewModel {
     targetFilePath: string;
     userPrompt: string;
     contextFiles: string[];
+    editableFiles: string[];
     status: BackendCodingTaskStatus;
     createdAt: string;
     updatedAt: string;
     transcriptText: string;
     modelOutputText: string;
     draftText: string;
+    launchMode: CodingTaskLaunchMode;
+    sourceTaskId: string | null;
+    selectedProfileId: string | null;
+    requestedCapabilities: CodingTaskRequestedCapability[];
+    appliedEvents: BackendAppliedEventRecord[];
     intent: string | null;
     reasoning: string | null;
     lastError: string | null;
@@ -387,6 +491,8 @@ export interface CodingTaskHistoryDetailViewModel {
 export interface CodeViewModel {
     filePath: string | null;
     status: CodeTaskStatus;
+    launchMode: CodingTaskLaunchMode;
+    sourceTaskId: string | null;
     transcriptText: string;
     modelOutputText: string;
     draftText: string;
@@ -489,6 +595,11 @@ export interface SidebarReuseHistoryTaskMessage {
     taskId: string;
 }
 
+export interface SidebarReplayHistoryTaskMessage {
+    type: "replayHistoryTask";
+    taskId: string;
+}
+
 export type SidebarMessageFromWebview =
     | SidebarReadyMessage
     | SidebarRefreshMessage
@@ -498,4 +609,5 @@ export type SidebarMessageFromWebview =
     | SidebarCancelTaskMessage
     | SidebarApplyTaskMessage
     | SidebarSelectHistoryTaskMessage
-    | SidebarReuseHistoryTaskMessage;
+    | SidebarReuseHistoryTaskMessage
+    | SidebarReplayHistoryTaskMessage;

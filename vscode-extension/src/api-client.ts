@@ -3,9 +3,12 @@ import {
     type ApiResult,
     type BaselineOnboardFilePayload,
     type BaselineOnboardFileResult,
+    type BackendCodingCapabilitiesResponse,
+    type BackendCodingProfilesStatusResponse,
     type BackendCodeEntity,
     type BackendCodingTaskHistoryDetail,
     type BackendCodingTaskHistoryItem,
+    type BackendCodingTaskHistoryPage,
     type BackendEntityExplanation,
     type BackendExplanationStreamDone,
     type BackendExplanationStreamInit,
@@ -16,6 +19,7 @@ import {
     type CodingTaskCreateRequestPayload,
     type CodingTaskCreateResponse,
     type CodingTaskDraftResult,
+    type CodingProfilesSyncRequestPayload,
     type CodingTaskToolResultPayload,
     type CreateRawEventPayload,
 } from "./types";
@@ -87,9 +91,14 @@ export interface TailEventsApi {
         signal?: AbortSignal,
     ): Promise<ApiResult<CodingTaskCreateResponse>>;
     getCodingTaskHistory(
-        limit?: number,
+        options?: {
+            limit?: number;
+            offset?: number;
+            status?: string;
+            targetFilePath?: string;
+        },
         signal?: AbortSignal,
-    ): Promise<ApiResult<BackendCodingTaskHistoryItem[]>>;
+    ): Promise<ApiResult<BackendCodingTaskHistoryPage | BackendCodingTaskHistoryItem[]>>;
     getCodingTaskHistoryDetail(
         taskId: string,
         signal?: AbortSignal,
@@ -104,6 +113,20 @@ export interface TailEventsApi {
         payload: CodingTaskAppliedPayload,
         signal?: AbortSignal,
     ): Promise<ApiResult<null>>;
+    retryCodingTaskEventWrites?(
+        taskId: string,
+        signal?: AbortSignal,
+    ): Promise<ApiResult<null>>;
+    syncCodingProfiles?(
+        payload: CodingProfilesSyncRequestPayload,
+        signal?: AbortSignal,
+    ): Promise<ApiResult<null>>;
+    getCodingProfilesStatus?(
+        signal?: AbortSignal,
+    ): Promise<ApiResult<BackendCodingProfilesStatusResponse>>;
+    getCodingCapabilities?(
+        signal?: AbortSignal,
+    ): Promise<ApiResult<BackendCodingCapabilitiesResponse>>;
     cancelCodingTask(
         taskId: string,
         signal?: AbortSignal,
@@ -314,14 +337,27 @@ export class TailEventsApiClient implements TailEventsApi {
     }
 
     public async getCodingTaskHistory(
-        limit = 20,
+        options?: {
+            limit?: number;
+            offset?: number;
+            status?: string;
+            targetFilePath?: string;
+        },
         signal?: AbortSignal,
-    ): Promise<ApiResult<BackendCodingTaskHistoryItem[]>> {
-        return this.requestJson<BackendCodingTaskHistoryItem[]>(
+    ): Promise<ApiResult<BackendCodingTaskHistoryPage | BackendCodingTaskHistoryItem[]>> {
+        const query: Record<string, string> = {
+            limit: String(options?.limit ?? 20),
+            offset: String(options?.offset ?? 0),
+        };
+        if (options?.status) {
+            query.task_status = options.status;
+        }
+        if (options?.targetFilePath) {
+            query.target_file_path = options.targetFilePath;
+        }
+        return this.requestJson<BackendCodingTaskHistoryPage>(
             "/coding/tasks/history",
-            {
-                limit: String(limit),
-            },
+            query,
             signal,
         );
     }
@@ -362,6 +398,53 @@ export class TailEventsApiClient implements TailEventsApi {
                 method: "POST",
                 body: payload,
             },
+        );
+    }
+
+    public async retryCodingTaskEventWrites(
+        taskId: string,
+        signal?: AbortSignal,
+    ): Promise<ApiResult<null>> {
+        return this.requestNoContent(
+            `/coding/tasks/${encodeURIComponent(taskId)}/retry-events`,
+            signal,
+            {
+                method: "POST",
+            },
+        );
+    }
+
+    public async syncCodingProfiles(
+        payload: CodingProfilesSyncRequestPayload,
+        signal?: AbortSignal,
+    ): Promise<ApiResult<null>> {
+        return this.requestNoContent(
+            "/profiles/sync",
+            signal,
+            {
+                method: "POST",
+                body: payload,
+            },
+        );
+    }
+
+    public async getCodingProfilesStatus(
+        signal?: AbortSignal,
+    ): Promise<ApiResult<BackendCodingProfilesStatusResponse>> {
+        return this.requestJson<BackendCodingProfilesStatusResponse>(
+            "/profiles/status",
+            undefined,
+            signal,
+        );
+    }
+
+    public async getCodingCapabilities(
+        signal?: AbortSignal,
+    ): Promise<ApiResult<BackendCodingCapabilitiesResponse>> {
+        return this.requestJson<BackendCodingCapabilitiesResponse>(
+            "/coding/capabilities",
+            undefined,
+            signal,
         );
     }
 
@@ -804,8 +887,10 @@ function isCodingTaskDraftResult(value: any): value is CodingTaskDraftResult {
     return Boolean(
         value &&
         typeof value.task_id === "string" &&
-        typeof value.updated_file_content === "string" &&
-        value.updated_file_content.length > 0 &&
+        Array.isArray(value.verified_files) &&
+        (value.updated_file_content === null ||
+            value.updated_file_content === undefined ||
+            typeof value.updated_file_content === "string") &&
         typeof value.intent === "string" &&
         value.intent.trim().length > 0 &&
         (value.reasoning === null || value.reasoning === undefined || typeof value.reasoning === "string") &&

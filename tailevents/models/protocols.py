@@ -6,6 +6,11 @@ if TYPE_CHECKING:
     from tailevents.models.entity import CodeEntity
     from tailevents.models.event import EntityRef, TailEvent
     from tailevents.models.explanation import EntityExplanation, ExplanationStreamEvent
+    from tailevents.models.profile import (
+        CodingCapabilitiesResponse,
+        CodingProfilesStatusResponse,
+        CodingProfilesSyncRequest,
+    )
     from tailevents.models.relation import Relation
     from tailevents.models.task import (
         CodingTaskAppliedRequest,
@@ -14,10 +19,12 @@ if TYPE_CHECKING:
         CodingTaskDraftResult,
         CodingTaskHistoryDetail,
         CodingTaskHistoryItem,
+        CodingTaskHistoryListResponse,
         CodingTaskRecord,
         CodingTaskToolResultRequest,
         TaskStepEvent,
     )
+    from tailevents.models.event import RawEvent
 
 
 @runtime_checkable
@@ -183,7 +190,18 @@ class CodingTaskStoreProtocol(Protocol):
 
     async def get(self, task_id: str) -> Optional["CodingTaskRecord"]: ...
 
-    async def list_recent(self, limit: int = 20) -> list["CodingTaskRecord"]: ...
+    async def list_recent(
+        self,
+        limit: int = 20,
+        offset: int = 0,
+        status: Optional[str] = None,
+        target_file_path: Optional[str] = None,
+    ) -> tuple[list["CodingTaskRecord"], int]: ...
+
+
+@runtime_checkable
+class IngestionPipelineProtocol(Protocol):
+    async def ingest(self, raw_event: "RawEvent") -> "TailEvent": ...
 
 
 @runtime_checkable
@@ -205,7 +223,13 @@ class CodingTaskServiceProtocol(Protocol):
 
     async def get_result(self, task_id: str) -> Optional["CodingTaskDraftResult"]: ...
 
-    async def list_history(self, limit: int = 20) -> list["CodingTaskHistoryItem"]: ...
+    async def list_history(
+        self,
+        limit: int = 20,
+        offset: int = 0,
+        status: Optional[str] = None,
+        target_file_path: Optional[str] = None,
+    ) -> "CodingTaskHistoryListResponse": ...
 
     async def get_history_detail(self, task_id: str) -> "CodingTaskHistoryDetail": ...
 
@@ -215,9 +239,23 @@ class CodingTaskServiceProtocol(Protocol):
         request: "CodingTaskAppliedRequest",
     ) -> None: ...
 
+    async def retry_event_writes(self, task_id: str) -> None: ...
+
+
+@runtime_checkable
+class CodingProfileRegistryProtocol(Protocol):
+    def sync_profiles(self, request: "CodingProfilesSyncRequest") -> None: ...
+
+    def get_profiles_status(self) -> "CodingProfilesStatusResponse": ...
+
+    def get_capabilities(self) -> "CodingCapabilitiesResponse": ...
+
+    def get_llm_client(self, profile_id: Optional[str] = None) -> LLMClientProtocol: ...
+
 
 __all__ = [
     "CacheProtocol",
+    "CodingProfileRegistryProtocol",
     "CodingTaskStoreProtocol",
     "CodingTaskServiceProtocol",
     "DocRetrieverProtocol",
@@ -225,6 +263,7 @@ __all__ = [
     "EventStoreProtocol",
     "ExplanationEngineProtocol",
     "GraphServiceProtocol",
+    "IngestionPipelineProtocol",
     "IndexerProtocol",
     "IndexerResult",
     "LLMClientProtocol",

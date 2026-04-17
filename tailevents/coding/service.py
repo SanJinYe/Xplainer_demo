@@ -1,4 +1,4 @@
-"""Backend orchestration for the B-next coding task loop."""
+"""Backend orchestration for the Phase 4 coding task loop."""
 
 import ast
 import asyncio
@@ -17,12 +17,16 @@ from tailevents.coding.exceptions import (
     CodingTaskNotFoundError,
     CodingTaskValidationError,
 )
+from tailevents.models.event import RawEvent
 from tailevents.models.protocols import (
+    CodingProfileRegistryProtocol,
     CodingTaskStoreProtocol,
+    IngestionPipelineProtocol,
     LLMClientProtocol,
     TaskStepStoreProtocol,
 )
 from tailevents.models.task import (
+    AppliedEventRecord,
     CodingTaskAppliedRequest,
     CodingTaskCreateRequest,
     CodingTaskCreateResponse,
@@ -30,10 +34,13 @@ from tailevents.models.task import (
     CodingTaskEdit,
     CodingTaskHistoryDetail,
     CodingTaskHistoryItem,
+    CodingTaskHistoryListResponse,
     CodingTaskRecord,
     CodingTaskToolResultRequest,
+    EditableFileReference,
     TaskStepEvent,
     ToolCallPayload,
+    VerifiedFileDraft,
     new_call_id,
     new_step_id,
     new_task_id,
@@ -41,11 +48,12 @@ from tailevents.models.task import (
 
 
 SYSTEM_PROMPT = """
-You are a coding agent for a single target Python file.
+You are a coding agent for one or two editable project files.
 
 You already have the exact observed contents of:
-- one editable target file
-- zero to two read-only context files
+- one primary editable target file
+- zero or one additional editable files
+- zero to three read-only context files
 
 You must return exactly one JSON object and nothing else.
 
@@ -56,26 +64,24 @@ The JSON object must contain exactly:
 
 Rules:
 - edits must be an array of exact-match replacements.
-- Each edit must contain exactly old_text and new_text.
-- old_text must be copied exactly from the observed target file content.
-- Only edit the target file.
+- Each edit must contain exactly file_path, old_text, and new_text.
+- file_path must refer to one of the explicitly editable files.
+- old_text must match exactly once inside the referenced editable file.
 - Do not modify context files.
 - Keep edits as small and local as possible.
 - Preserve indentation, spacing, and blank lines.
-- The final target file must remain valid Python.
+- Every changed Python file must remain valid Python.
 """.strip()
 
 USER_PROMPT_TEMPLATE = """
 Task goal:
 {user_prompt}
 
-Target file path:
+Primary target file:
 {target_file_path}
 
-Target file content:
-<target_file>
-{target_file_content}
-</target_file>
+Editable files:
+{editable_block}
 
 Readonly context files:
 {context_block}
@@ -85,9 +91,11 @@ Previous failure to fix:
 """.strip()
 
 CODE_FENCE_PATTERN = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE)
-MAX_CONTEXT_FILES = 2
+MAX_CONTEXT_FILES = 3
+MAX_TOTAL_EDITABLE_FILES = 2
 MAX_RETRIES = 1
 MAX_SUMMARY_LENGTH = 240
+MAX_EVENT_WRITE_RETRIES = 3
 
 
 class _EditPlan(BaseModel):
@@ -121,7 +129,11 @@ class _TaskSession:
     task_id: str
     request: CodingTaskCreateRequest
     record: CodingTaskRecord
+    llm_client: LLMClientProtocol
+    editable_paths: set[str]
+    readonly_paths: set[str]
     allowed_files: set[str]
+    expected_versions: dict[str, int]
     events: list[_StreamEvent] = field(default_factory=list)
     condition: asyncio.Condition = field(default_factory=asyncio.Condition)
     pending_tool: Optional[_PendingToolRequest] = None
@@ -134,17 +146,21 @@ class _TaskSession:
 
 
 class CodingTaskService:
-    """Coordinate a minimal backend-driven coding task loop."""
+    """Coordinate the backend-driven coding task loop."""
 
     def __init__(
         self,
         llm_client: LLMClientProtocol,
         task_store: CodingTaskStoreProtocol,
         step_store: TaskStepStoreProtocol,
+        ingestion_pipeline: Optional[IngestionPipelineProtocol] = None,
+        profile_registry: Optional[CodingProfileRegistryProtocol] = None,
     ):
         self._llm_client = llm_client
         self._task_store = task_store
         self._step_store = step_store
+        self._ingestion_pipeline = ingestion_pipeline
+        self._profile_registry = profile_registry
         self._sessions: dict[str, _TaskSession] = {}
 
     async def create_task(
@@ -153,19 +169,36 @@ class CodingTaskService:
     ) -> CodingTaskCreateResponse:
         self._validate_request(request)
         task_id = new_task_id()
+        llm_client = self._resolve_llm_client(request.selected_profile_id)
         record = CodingTaskRecord(
             task_id=task_id,
             target_file_path=request.target_file_path,
             user_prompt=request.user_prompt,
-            context_files=request.context_files,
+            context_files=list(request.context_files),
+            editable_files=[item.file_path for item in request.editable_files],
             status="created",
+            launch_mode=request.launch_mode,
+            source_task_id=request.source_task_id,
+            selected_profile_id=request.selected_profile_id,
+            requested_capabilities=list(request.requested_capabilities),
         )
         await self._task_store.put(record)
+
+        editable_paths = {
+            request.target_file_path,
+            *[item.file_path for item in request.editable_files],
+        }
+        readonly_paths = set(request.context_files)
+        expected_versions = self._build_expected_versions(request)
         session = _TaskSession(
             task_id=task_id,
             request=request,
             record=record,
-            allowed_files={request.target_file_path, *request.context_files},
+            llm_client=llm_client,
+            editable_paths=editable_paths,
+            readonly_paths=readonly_paths,
+            allowed_files=editable_paths | readonly_paths,
+            expected_versions=expected_versions,
         )
         self._sessions[task_id] = session
         session.worker = asyncio.create_task(self._run_task(session))
@@ -239,18 +272,37 @@ class CodingTaskService:
         session = self._require_session(task_id)
         return session.result
 
-    async def list_history(self, limit: int = 20) -> list[CodingTaskHistoryItem]:
-        records = await self._task_store.list_recent(limit=limit)
-        return [
+    async def list_history(
+        self,
+        limit: int = 20,
+        offset: int = 0,
+        status: Optional[str] = None,
+        target_file_path: Optional[str] = None,
+    ) -> CodingTaskHistoryListResponse:
+        records, total = await self._task_store.list_recent(
+            limit=limit,
+            offset=offset,
+            status=status,
+            target_file_path=target_file_path,
+        )
+        items = [
             CodingTaskHistoryItem(
                 task_id=record.task_id,
                 target_file_path=record.target_file_path,
+                user_prompt=record.user_prompt,
                 status=record.status,
                 created_at=record.created_at,
                 updated_at=record.updated_at,
             )
             for record in records
         ]
+        return CodingTaskHistoryListResponse(
+            items=items,
+            total=total,
+            limit=limit,
+            offset=offset,
+            has_more=offset + len(items) < total,
+        )
 
     async def get_history_detail(self, task_id: str) -> CodingTaskHistoryDetail:
         record = await self._require_task_record(task_id)
@@ -260,16 +312,22 @@ class CodingTaskService:
             target_file_path=record.target_file_path,
             user_prompt=record.user_prompt,
             context_files=record.context_files,
+            editable_files=record.editable_files,
             status=record.status,
             created_at=record.created_at,
             updated_at=record.updated_at,
             steps=steps,
             model_output_text=record.model_output_text,
             verified_draft_content=record.verified_draft_content,
+            verified_files=record.verified_files,
             intent=record.intent,
             reasoning=record.reasoning,
             last_error=record.last_error,
-            applied_event_id=record.applied_event_id,
+            applied_events=record.applied_events,
+            launch_mode=record.launch_mode,
+            source_task_id=record.source_task_id,
+            selected_profile_id=record.selected_profile_id,
+            requested_capabilities=record.requested_capabilities,
         )
 
     async def mark_applied(
@@ -278,18 +336,73 @@ class CodingTaskService:
         request: CodingTaskAppliedRequest,
     ) -> None:
         record = await self._require_task_record(task_id)
+        verified_files = list(record.verified_files)
+        if not verified_files:
+            raise CodingTaskValidationError("Task does not have verified files to apply")
+        self._validate_applied_files(record, request)
+
+        applied_events = self._normalize_applied_events(record)
+        event_step_id = await self._resolve_event_step_id(task_id)
+        updated_events = await self._write_missing_events(
+            record=record,
+            verified_files=verified_files,
+            applied_events=applied_events,
+            event_step_id=event_step_id,
+        )
+
+        unresolved = [item for item in updated_events if item.status != "written"]
+        updated_status = "applied" if not unresolved else "applied_event_pending"
         updated = record.model_copy(
             update={
-                "status": "applied",
-                "applied_event_id": request.event_id,
-                "last_error": None,
+                "status": updated_status,
+                "applied_events": updated_events,
+                "last_error": self._first_failed_error(updated_events),
                 "updated_at": datetime.utcnow(),
             }
         )
         await self._task_store.put(updated)
-        session = self._sessions.get(task_id)
-        if session is not None:
-            session.record = updated
+        self._replace_session_record(task_id, updated)
+
+    async def retry_event_writes(self, task_id: str) -> None:
+        record = await self._require_task_record(task_id)
+        verified_files = list(record.verified_files)
+        if not verified_files:
+            raise CodingTaskValidationError("Task does not have verified files to retry")
+
+        applied_events = self._normalize_applied_events(record)
+        if not any(item.status != "written" for item in applied_events):
+            return
+
+        event_step_id = await self._resolve_event_step_id(task_id)
+        updated_events = await self._write_missing_events(
+            record=record,
+            verified_files=verified_files,
+            applied_events=applied_events,
+            event_step_id=event_step_id,
+        )
+
+        unresolved = [item for item in updated_events if item.status != "written"]
+        retry_count = record.applied_event_retry_count
+        status = "applied"
+        if unresolved:
+            retry_count += 1
+            status = (
+                "applied_without_events"
+                if retry_count >= MAX_EVENT_WRITE_RETRIES
+                else "applied_event_pending"
+            )
+
+        updated = record.model_copy(
+            update={
+                "status": status,
+                "applied_events": updated_events,
+                "applied_event_retry_count": retry_count,
+                "last_error": self._first_failed_error(updated_events),
+                "updated_at": datetime.utcnow(),
+            }
+        )
+        await self._task_store.put(updated)
+        self._replace_session_record(task_id, updated)
 
     async def reset_all_sessions(self) -> int:
         sessions = list(self._sessions.values())
@@ -323,42 +436,41 @@ class CodingTaskService:
             )
             await self._emit(session, "status", {"status": "running"})
 
-            target_view = await self._request_view(
-                session,
-                file_path=session.request.target_file_path,
-                intent="Observe the target file before editing",
-            )
-            self._validate_initial_target(session, target_view)
-            initial_hash = target_view.content_hash
+            editable_views = await self._observe_initial_editable_files(session)
+            context_views = await self._observe_context_files(session)
 
-            context_views: list[_ObservedFile] = []
-            for context_file in session.request.context_files:
-                context_views.append(
-                    await self._request_view(
-                        session,
-                        file_path=context_file,
-                        intent=f"Observe readonly context file {context_file}",
-                    )
-                )
-
+            initial_hashes = {
+                file_path: observed.content_hash
+                for file_path, observed in editable_views.items()
+            }
             failure_hint: Optional[str] = None
             attempt = 0
+
             while attempt <= MAX_RETRIES:
                 try:
-                    plan, draft_content, edit_step_id = await self._run_edit_step(
+                    plan, draft_contents, edit_step_id = await self._run_edit_step(
                         session,
-                        target_view,
-                        context_views,
-                        failure_hint,
+                        editable_views=editable_views,
+                        context_views=context_views,
+                        failure_hint=failure_hint,
                     )
-                    verify_step_id = await self._run_verify_step(
+                    verify_step_id, verified_files = await self._run_verify_step(
                         session,
-                        target_view=target_view,
-                        draft_content=draft_content,
+                        editable_views=editable_views,
+                        draft_contents=draft_contents,
+                    )
+                    primary_draft = next(
+                        (
+                            item.content
+                            for item in verified_files
+                            if item.file_path == session.request.target_file_path
+                        ),
+                        None,
                     )
                     session.result = CodingTaskDraftResult(
                         task_id=session.task_id,
-                        updated_file_content=draft_content,
+                        verified_files=verified_files,
+                        updated_file_content=primary_draft,
                         intent=plan.intent,
                         reasoning=plan.reasoning,
                         session_id=session.task_id,
@@ -367,7 +479,9 @@ class CodingTaskService:
                     await self._update_task_record(
                         session,
                         status="ready_to_apply",
-                        verified_draft_content=draft_content,
+                        verified_draft_content=None,
+                        verified_files=verified_files,
+                        applied_events=self._build_pending_applied_events(verified_files),
                         intent=plan.intent,
                         reasoning=plan.reasoning,
                         last_error=None,
@@ -382,16 +496,8 @@ class CodingTaskService:
                     if attempt >= MAX_RETRIES:
                         raise
                     attempt += 1
-                    target_view = await self._request_view(
-                        session,
-                        file_path=session.request.target_file_path,
-                        intent="Re-observe the target file after a failed attempt",
-                    )
-                    self._validate_retry_target(
-                        session,
-                        target_view=target_view,
-                        initial_hash=initial_hash,
-                    )
+                    editable_views = await self._reobserve_editable_files(session, initial_hashes)
+                    context_views = await self._observe_context_files(session)
         except CodingTaskCancelledError:
             await self._update_task_record(
                 session,
@@ -420,37 +526,97 @@ class CodingTaskService:
             async with session.condition:
                 session.condition.notify_all()
 
+    async def _observe_initial_editable_files(
+        self,
+        session: _TaskSession,
+    ) -> dict[str, _ObservedFile]:
+        observed: dict[str, _ObservedFile] = {}
+        observed[session.request.target_file_path] = await self._request_view(
+            session,
+            file_path=session.request.target_file_path,
+            intent="Observe the primary target file before editing",
+        )
+        self._validate_expected_version(
+            file_path=session.request.target_file_path,
+            observed=observed[session.request.target_file_path],
+            expected_version=session.request.target_file_version,
+        )
+
+        for editable in session.request.editable_files:
+            observed[editable.file_path] = await self._request_view(
+                session,
+                file_path=editable.file_path,
+                intent=f"Observe additional editable file {editable.file_path}",
+            )
+            self._validate_expected_version(
+                file_path=editable.file_path,
+                observed=observed[editable.file_path],
+                expected_version=editable.document_version,
+            )
+
+        return observed
+
+    async def _observe_context_files(
+        self,
+        session: _TaskSession,
+    ) -> list[_ObservedFile]:
+        observed: list[_ObservedFile] = []
+        for context_file in session.request.context_files:
+            observed.append(
+                await self._request_view(
+                    session,
+                    file_path=context_file,
+                    intent=f"Observe readonly context file {context_file}",
+                )
+            )
+        return observed
+
+    async def _reobserve_editable_files(
+        self,
+        session: _TaskSession,
+        initial_hashes: dict[str, str],
+    ) -> dict[str, _ObservedFile]:
+        refreshed = await self._observe_initial_editable_files(session)
+        for file_path, observed in refreshed.items():
+            if observed.content_hash != initial_hashes[file_path]:
+                raise CodingTaskValidationError(
+                    f"Editable file content drifted during task execution: {file_path}"
+                )
+        return refreshed
+
     async def _run_edit_step(
         self,
         session: _TaskSession,
-        target_view: _ObservedFile,
+        editable_views: dict[str, _ObservedFile],
         context_views: list[_ObservedFile],
         failure_hint: Optional[str],
-    ) -> tuple[_EditPlan, str, str]:
+    ) -> tuple[_EditPlan, dict[str, str], str]:
         step_id = new_step_id()
         attempt_number = self._next_edit_attempt(session)
-        started = TaskStepEvent(
-            task_id=session.task_id,
-            step_id=step_id,
-            step_kind="edit",
-            status="started",
-            file_path=target_view.file_path,
-            content_hash=target_view.content_hash,
-            intent="Generate a local edit plan for the target file",
-            input_summary=self._truncate(
-                f"target={target_view.file_path}, contexts={len(context_views)}"
+        await self._record_step(
+            session,
+            TaskStepEvent(
+                task_id=session.task_id,
+                step_id=step_id,
+                step_kind="edit",
+                status="started",
+                file_path=session.request.target_file_path,
+                content_hash=editable_views[session.request.target_file_path].content_hash,
+                intent="Generate local edits for the declared editable files",
+                input_summary=self._truncate(
+                    f"editable={len(editable_views)}, contexts={len(context_views)}"
+                ),
             ),
         )
-        await self._record_step(session, started)
 
+        raw_output = ""
+        captured_output = False
         try:
-            raw_output = ""
-            captured_output = False
-            async for chunk in self._llm_client.stream_generate(
+            async for chunk in session.llm_client.stream_generate(
                 system_prompt=SYSTEM_PROMPT,
                 user_prompt=self._build_user_prompt(
                     session.request,
-                    target_view=target_view,
+                    editable_views=editable_views,
                     context_views=context_views,
                     failure_hint=failure_hint,
                 ),
@@ -460,17 +626,19 @@ class CodingTaskService:
                 if not chunk:
                     continue
                 raw_output += chunk
-                await self._emit(
-                    session,
-                    "model_delta",
-                    {"text": chunk},
-                )
+                await self._emit(session, "model_delta", {"text": chunk})
             await self._capture_model_output(session, attempt_number, raw_output)
             captured_output = True
-            plan = self._parse_edit_plan(raw_output)
-            draft_content = self._apply_edits(target_view.content, plan.edits)
-            if draft_content == target_view.content:
-                raise CodingTaskValidationError("Edit plan did not change the target file")
+
+            default_file_path = None
+            if len(editable_views) == 1:
+                default_file_path = next(iter(editable_views))
+            plan = self._parse_edit_plan(raw_output, default_file_path=default_file_path)
+            draft_contents = self._apply_edits(
+                editable_views=editable_views,
+                editable_paths=session.editable_paths,
+                edits=plan.edits,
+            )
         except Exception as error:
             if not captured_output:
                 await self._capture_model_output(session, attempt_number, raw_output)
@@ -481,18 +649,20 @@ class CodingTaskService:
                     step_id=step_id,
                     step_kind="edit",
                     status="failed",
-                    file_path=target_view.file_path,
-                    content_hash=target_view.content_hash,
-                    intent="Generate a local edit plan for the target file",
+                    file_path=session.request.target_file_path,
+                    content_hash=editable_views[session.request.target_file_path].content_hash,
+                    intent="Generate local edits for the declared editable files",
                     reasoning_summary=self._truncate(str(error)),
                     input_summary=self._truncate(
-                        f"target={target_view.file_path}, contexts={len(context_views)}"
+                        f"editable={len(editable_views)}, contexts={len(context_views)}"
                     ),
                     output_summary=self._truncate(str(error)),
                 ),
             )
             raise
 
+        changed_count = len(draft_contents)
+        edit_count = len(plan.edits)
         await self._record_step(
             session,
             TaskStepEvent(
@@ -500,26 +670,26 @@ class CodingTaskService:
                 step_id=step_id,
                 step_kind="edit",
                 status="succeeded",
-                file_path=target_view.file_path,
-                content_hash=self._hash_content(draft_content),
+                file_path=session.request.target_file_path,
+                content_hash=self._hash_content(json.dumps(draft_contents, sort_keys=True)),
                 intent=plan.intent,
                 reasoning_summary=self._truncate(plan.reasoning),
                 input_summary=self._truncate(
-                    f"target={target_view.file_path}, contexts={len(context_views)}"
+                    f"editable={len(editable_views)}, contexts={len(context_views)}"
                 ),
                 output_summary=self._truncate(
-                    f"generated {len(plan.edits)} edit(s) for the target draft"
+                    f"generated {edit_count} edit(s) across {changed_count} file(s)"
                 ),
             ),
         )
-        return (plan, draft_content, step_id)
+        return (plan, draft_contents, step_id)
 
     async def _run_verify_step(
         self,
         session: _TaskSession,
-        target_view: _ObservedFile,
-        draft_content: str,
-    ) -> str:
+        editable_views: dict[str, _ObservedFile],
+        draft_contents: dict[str, str],
+    ) -> tuple[str, list[VerifiedFileDraft]]:
         step_id = new_step_id()
         await self._record_step(
             session,
@@ -528,15 +698,33 @@ class CodingTaskService:
                 step_id=step_id,
                 step_kind="verify",
                 status="started",
-                file_path=target_view.file_path,
-                content_hash=self._hash_content(draft_content),
-                intent="Verify the draft before Apply",
-                input_summary=self._truncate("python syntax + target drift check"),
+                file_path=session.request.target_file_path,
+                content_hash=self._hash_content(json.dumps(draft_contents, sort_keys=True)),
+                intent="Verify the task draft before Apply",
+                input_summary=self._truncate(
+                    f"task-level drift + python syntax across {len(draft_contents)} file(s)"
+                ),
             ),
         )
 
         try:
-            self._validate_python_source(target_view.file_path, draft_content)
+            for file_path, draft_content in draft_contents.items():
+                latest_view = await self._request_view(
+                    session,
+                    file_path=file_path,
+                    intent=f"Re-observe editable file {file_path} before Apply verification",
+                )
+                original_view = editable_views[file_path]
+                self._validate_expected_version(
+                    file_path=file_path,
+                    observed=latest_view,
+                    expected_version=session.expected_versions[file_path],
+                )
+                if latest_view.content_hash != original_view.content_hash:
+                    raise CodingTaskValidationError(
+                        f"Editable file content drifted during task execution: {file_path}"
+                    )
+                self._validate_python_source(file_path, draft_content)
         except Exception as error:
             await self._record_step(
                 session,
@@ -545,15 +733,32 @@ class CodingTaskService:
                     step_id=step_id,
                     step_kind="verify",
                     status="failed",
-                    file_path=target_view.file_path,
-                    content_hash=self._hash_content(draft_content),
-                    intent="Verify the draft before Apply",
+                    file_path=session.request.target_file_path,
+                    content_hash=self._hash_content(json.dumps(draft_contents, sort_keys=True)),
+                    intent="Verify the task draft before Apply",
                     reasoning_summary=self._truncate(str(error)),
-                    input_summary=self._truncate("python syntax + target drift check"),
+                    input_summary=self._truncate(
+                        f"task-level drift + python syntax across {len(draft_contents)} file(s)"
+                    ),
                     output_summary=self._truncate(str(error)),
                 ),
             )
             raise
+
+        verified_files: list[VerifiedFileDraft] = []
+        for file_path in self._ordered_editable_paths(session.request):
+            if file_path not in draft_contents:
+                continue
+            original_view = editable_views[file_path]
+            verified_files.append(
+                VerifiedFileDraft(
+                    file_path=file_path,
+                    content=draft_contents[file_path],
+                    content_hash=self._hash_content(draft_contents[file_path]),
+                    original_content_hash=original_view.content_hash,
+                    original_document_version=original_view.document_version,
+                )
+            )
 
         await self._record_step(
             session,
@@ -562,15 +767,21 @@ class CodingTaskService:
                 step_id=step_id,
                 step_kind="verify",
                 status="succeeded",
-                file_path=target_view.file_path,
-                content_hash=self._hash_content(draft_content),
-                intent="Verify the draft before Apply",
-                reasoning_summary="Python syntax is valid and the target file did not drift.",
-                input_summary=self._truncate("python syntax + target drift check"),
-                output_summary=self._truncate("verified draft ready for Apply"),
+                file_path=session.request.target_file_path,
+                content_hash=self._hash_content(json.dumps(draft_contents, sort_keys=True)),
+                intent="Verify the task draft before Apply",
+                reasoning_summary=self._truncate(
+                    "All changed files passed drift checks and Python syntax validation."
+                ),
+                input_summary=self._truncate(
+                    f"task-level drift + python syntax across {len(draft_contents)} file(s)"
+                ),
+                output_summary=self._truncate(
+                    f"verified {len(verified_files)} file(s) ready for Apply"
+                ),
             ),
         )
-        return step_id
+        return (step_id, verified_files)
 
     async def _request_view(
         self,
@@ -686,10 +897,20 @@ class CodingTaskService:
     def _build_user_prompt(
         self,
         request: CodingTaskCreateRequest,
-        target_view: _ObservedFile,
+        editable_views: dict[str, _ObservedFile],
         context_views: list[_ObservedFile],
         failure_hint: Optional[str],
     ) -> str:
+        editable_block = "\n\n".join(
+            [
+                (
+                    f"<editable_file path=\"{view.file_path}\">\n"
+                    f"{view.content}\n"
+                    f"</editable_file>"
+                )
+                for view in editable_views.values()
+            ]
+        )
         if context_views:
             context_block = "\n\n".join(
                 [
@@ -706,13 +927,17 @@ class CodingTaskService:
 
         return USER_PROMPT_TEMPLATE.format(
             user_prompt=request.user_prompt,
-            target_file_path=target_view.file_path,
-            target_file_content=target_view.content,
+            target_file_path=request.target_file_path,
+            editable_block=editable_block,
             context_block=context_block,
             failure_hint=failure_hint or "None",
         )
 
-    def _parse_edit_plan(self, raw_output: str) -> _EditPlan:
+    def _parse_edit_plan(
+        self,
+        raw_output: str,
+        default_file_path: Optional[str] = None,
+    ) -> _EditPlan:
         normalized = raw_output.strip()
         if not normalized:
             raise CodingTaskValidationError("Model returned an empty response")
@@ -731,6 +956,13 @@ class CodingTaskService:
                 f"Model output was not valid JSON: {error.msg}"
             ) from error
 
+        if default_file_path and isinstance(parsed, dict):
+            edits = parsed.get("edits")
+            if isinstance(edits, list):
+                for item in edits:
+                    if isinstance(item, dict) and "file_path" not in item:
+                        item["file_path"] = default_file_path
+
         try:
             plan = _EditPlan.model_validate(parsed)
         except Exception as error:
@@ -744,25 +976,50 @@ class CodingTaskService:
             raise CodingTaskValidationError("Model returned an empty intent")
         return plan
 
-    def _apply_edits(self, original_content: str, edits: list[CodingTaskEdit]) -> str:
-        working_content = original_content
+    def _apply_edits(
+        self,
+        editable_views: dict[str, _ObservedFile],
+        editable_paths: set[str],
+        edits: list[CodingTaskEdit],
+    ) -> dict[str, str]:
+        working_content = {
+            file_path: observed.content
+            for file_path, observed in editable_views.items()
+        }
+
         for index, edit in enumerate(edits, start=1):
+            if edit.file_path not in editable_paths:
+                raise CodingTaskValidationError(
+                    f"Edit {index} targeted a file outside the editable set: {edit.file_path}"
+                )
             if not edit.old_text:
                 raise CodingTaskValidationError(f"Edit {index} old_text must not be empty")
 
-            matches = working_content.count(edit.old_text)
+            current_content = working_content[edit.file_path]
+            matches = current_content.count(edit.old_text)
             if matches == 0:
                 raise CodingTaskValidationError(
-                    f"Edit {index} old_text did not match the observed target file"
+                    f"Edit {index} old_text did not match the observed file: {edit.file_path}"
                 )
             if matches > 1:
                 raise CodingTaskValidationError(
-                    f"Edit {index} old_text matched multiple locations in the observed target file"
+                    f"Edit {index} old_text matched multiple locations in {edit.file_path}"
                 )
 
-            working_content = working_content.replace(edit.old_text, edit.new_text, 1)
+            working_content[edit.file_path] = current_content.replace(
+                edit.old_text,
+                edit.new_text,
+                1,
+            )
 
-        return working_content
+        changed = {
+            file_path: content
+            for file_path, content in working_content.items()
+            if content != editable_views[file_path].content
+        }
+        if not changed:
+            raise CodingTaskValidationError("Edit plan did not change any editable file")
+        return changed
 
     def _validate_request(self, request: CodingTaskCreateRequest) -> None:
         if not request.target_file_path.strip():
@@ -772,31 +1029,55 @@ class CodingTaskService:
         if not request.user_prompt.strip():
             raise CodingTaskValidationError("user_prompt must not be empty")
         if len(request.context_files) > MAX_CONTEXT_FILES:
-            raise CodingTaskValidationError("context_files must contain at most 2 items")
-        deduped = {item for item in request.context_files}
-        if len(deduped) != len(request.context_files):
+            raise CodingTaskValidationError("context_files must contain at most 3 items")
+        if len(request.editable_files) + 1 > MAX_TOTAL_EDITABLE_FILES:
+            raise CodingTaskValidationError("editable files must contain at most 2 files total")
+        if request.launch_mode == "replay" and not request.source_task_id:
+            raise CodingTaskValidationError("source_task_id is required for replay tasks")
+        if request.launch_mode == "new" and request.source_task_id:
+            raise CodingTaskValidationError("source_task_id is only valid for replay tasks")
+
+        context_paths = [item.strip() for item in request.context_files]
+        if any(not item for item in context_paths):
+            raise CodingTaskValidationError("context_files must not contain empty paths")
+        if len(set(context_paths)) != len(context_paths):
             raise CodingTaskValidationError("context_files must not contain duplicates")
-        if request.target_file_path in deduped:
+        if request.target_file_path in context_paths:
             raise CodingTaskValidationError("context_files must not include the target file")
 
-    def _validate_initial_target(self, session: _TaskSession, target_view: _ObservedFile) -> None:
-        version = target_view.document_version
-        if version is None:
-            raise CodingTaskValidationError("Target view did not include a document version")
-        if version != session.request.target_file_version:
-            raise CodingTaskValidationError("Target file changed before the task could start")
+        editable_paths = []
+        for editable in request.editable_files:
+            if not editable.file_path.strip():
+                raise CodingTaskValidationError("editable_files must not contain empty file paths")
+            if editable.document_version < 1:
+                raise CodingTaskValidationError("editable file document_version must be >= 1")
+            editable_paths.append(editable.file_path)
 
-    def _validate_retry_target(
+        if len(set(editable_paths)) != len(editable_paths):
+            raise CodingTaskValidationError("editable_files must not contain duplicates")
+        if request.target_file_path in editable_paths:
+            raise CodingTaskValidationError("editable_files must not include the target file")
+        if set(context_paths) & set(editable_paths):
+            raise CodingTaskValidationError("context_files and editable_files must not overlap")
+
+        capabilities = list(request.requested_capabilities)
+        if len(set(capabilities)) != len(capabilities):
+            raise CodingTaskValidationError("requested_capabilities must not contain duplicates")
+
+    def _validate_expected_version(
         self,
-        session: _TaskSession,
-        target_view: _ObservedFile,
-        initial_hash: str,
+        file_path: str,
+        observed: _ObservedFile,
+        expected_version: int,
     ) -> None:
-        version = target_view.document_version
-        if version is None or version != session.request.target_file_version:
-            raise CodingTaskValidationError("Target file changed during task execution")
-        if target_view.content_hash != initial_hash:
-            raise CodingTaskValidationError("Target file content drifted during task execution")
+        if observed.document_version is None:
+            raise CodingTaskValidationError(
+                f"Observed file did not include a document version: {file_path}"
+            )
+        if observed.document_version != expected_version:
+            raise CodingTaskValidationError(
+                f"Editable file changed before the task could start: {file_path}"
+            )
 
     def _validate_python_source(self, file_path: str, source: str) -> None:
         if not file_path.lower().endswith(".py"):
@@ -807,8 +1088,25 @@ class CodingTaskService:
             message = error.msg or "invalid syntax"
             line = error.lineno or "unknown"
             raise CodingTaskValidationError(
-                f"Draft is not valid Python: line {line}: {message}"
+                f"Draft is not valid Python: {file_path}: line {line}: {message}"
             ) from error
+
+    def _build_expected_versions(self, request: CodingTaskCreateRequest) -> dict[str, int]:
+        expected_versions = {request.target_file_path: request.target_file_version}
+        for editable in request.editable_files:
+            expected_versions[editable.file_path] = editable.document_version
+        return expected_versions
+
+    def _ordered_editable_paths(self, request: CodingTaskCreateRequest) -> list[str]:
+        return [request.target_file_path] + [item.file_path for item in request.editable_files]
+
+    def _resolve_llm_client(self, profile_id: Optional[str]) -> LLMClientProtocol:
+        if self._profile_registry is None:
+            return self._llm_client
+        try:
+            return self._profile_registry.get_llm_client(profile_id)
+        except Exception as error:
+            raise CodingTaskValidationError(str(error)) from error
 
     def _require_session(self, task_id: str) -> _TaskSession:
         session = self._sessions.get(task_id)
@@ -821,6 +1119,11 @@ class CodingTaskService:
         if record is None:
             raise CodingTaskNotFoundError(f"Task not found: {task_id}")
         return record
+
+    def _replace_session_record(self, task_id: str, record: CodingTaskRecord) -> None:
+        session = self._sessions.get(task_id)
+        if session is not None:
+            session.record = record
 
     def _next_edit_attempt(self, session: _TaskSession) -> int:
         session.edit_attempts += 1
@@ -838,6 +1141,114 @@ class CodingTaskService:
         if len(stripped) <= MAX_SUMMARY_LENGTH:
             return stripped
         return f"{stripped[: MAX_SUMMARY_LENGTH - 3]}..."
+
+    def _validate_applied_files(
+        self,
+        record: CodingTaskRecord,
+        request: CodingTaskAppliedRequest,
+    ) -> None:
+        provided = {item.file_path: item.content_hash for item in request.applied_files}
+        expected = {item.file_path: item.content_hash for item in record.verified_files}
+        if set(provided) != set(expected):
+            raise CodingTaskValidationError("applied_files must exactly match the verified file set")
+        for file_path, content_hash in provided.items():
+            if expected[file_path] != content_hash:
+                raise CodingTaskValidationError(
+                    f"Applied file content hash did not match verified draft: {file_path}"
+                )
+
+    def _normalize_applied_events(self, record: CodingTaskRecord) -> list[AppliedEventRecord]:
+        if record.applied_events:
+            return [item.model_copy(deep=True) for item in record.applied_events]
+        return self._build_pending_applied_events(record.verified_files)
+
+    def _build_pending_applied_events(
+        self,
+        verified_files: list[VerifiedFileDraft],
+    ) -> list[AppliedEventRecord]:
+        return [
+            AppliedEventRecord(file_path=item.file_path, status="pending")
+            for item in verified_files
+        ]
+
+    async def _write_missing_events(
+        self,
+        record: CodingTaskRecord,
+        verified_files: list[VerifiedFileDraft],
+        applied_events: list[AppliedEventRecord],
+        event_step_id: Optional[str],
+    ) -> list[AppliedEventRecord]:
+        if self._ingestion_pipeline is None:
+            raise CodingTaskValidationError("Apply event writing is not configured on the backend")
+
+        verified_by_path = {item.file_path: item for item in verified_files}
+        updated: list[AppliedEventRecord] = []
+        for event_record in applied_events:
+            if event_record.status == "written" and event_record.event_id:
+                updated.append(event_record)
+                continue
+
+            verified_file = verified_by_path.get(event_record.file_path)
+            if verified_file is None:
+                updated.append(
+                    event_record.model_copy(
+                        update={
+                            "status": "failed",
+                            "last_error": f"Missing verified draft for {event_record.file_path}",
+                        }
+                    )
+                )
+                continue
+
+            try:
+                tail_event = await self._ingestion_pipeline.ingest(
+                    RawEvent(
+                        action_type="modify",
+                        file_path=verified_file.file_path,
+                        code_snapshot=verified_file.content,
+                        intent=record.intent or "Apply verified coding draft",
+                        reasoning=record.reasoning,
+                        agent_step_id=event_step_id,
+                        session_id=record.task_id,
+                    )
+                )
+                updated.append(
+                    event_record.model_copy(
+                        update={
+                            "event_id": tail_event.event_id,
+                            "status": "written",
+                            "last_error": None,
+                        }
+                    )
+                )
+            except Exception as error:
+                updated.append(
+                    event_record.model_copy(
+                        update={
+                            "event_id": None,
+                            "status": "failed",
+                            "last_error": str(error),
+                        }
+                    )
+                )
+        return updated
+
+    async def _resolve_event_step_id(self, task_id: str) -> Optional[str]:
+        steps = await self._step_store.get_by_task(task_id)
+        for preferred_kind in ("verify", "edit"):
+            for step in reversed(steps):
+                if step.status == "succeeded" and step.step_kind == preferred_kind:
+                    return step.step_id
+        return None
+
+    def _first_failed_error(
+        self,
+        applied_events: list[AppliedEventRecord],
+    ) -> Optional[str]:
+        for item in applied_events:
+            if item.status != "written" and item.last_error:
+                return item.last_error
+        return None
 
 
 __all__ = ["CodingTaskService"]

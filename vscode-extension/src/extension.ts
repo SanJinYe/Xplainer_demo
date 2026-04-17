@@ -13,6 +13,7 @@ import {
     onboardWorkspaceFiles,
 } from "./onboarding";
 import { getFileLookupCandidates } from "./path-utils";
+import { CodingProfileManager } from "./profile-manager";
 import { TailEventsSidebarProvider } from "./sidebar-provider";
 import type { BackendCodeEntity, ExplainCommandArgs } from "./types";
 
@@ -20,6 +21,7 @@ const COMMAND_EXPLAIN_CURRENT_SYMBOL = "tailEvents.explainCurrentSymbol";
 const COMMAND_ONBOARD_REPOSITORY = "tailEvents.onboardRepository";
 const COMMAND_OPEN_PANEL = "tailEvents.openPanel";
 const COMMAND_REFRESH_PANEL = "tailEvents.refreshPanel";
+const COMMAND_MANAGE_CODING_PROFILES = "tailEvents.manageCodingProfiles";
 const VIEW_CONTAINER_ID = "tailevents-sidebar";
 const VIEW_ID = "tailevents.sidebarView";
 const DEFAULT_BASE_URL = "http://127.0.0.1:8766/api/v1";
@@ -42,6 +44,8 @@ export function activate(context: vscode.ExtensionContext): void {
         getTimeoutMs,
         (message) => outputChannel.appendLine(message),
     );
+    const profileManager = new CodingProfileManager(context, apiClient);
+    void profileManager.syncToBackend();
 
     const hoverProvider = new TailEventsHoverProvider({
         apiClient,
@@ -57,6 +61,7 @@ export function activate(context: vscode.ExtensionContext): void {
     const sidebarProvider = new TailEventsSidebarProvider({
         apiClient,
         getBaseUrl,
+        getSelectedProfileId: () => profileManager.getSelectedProfileId(),
         templatePath: path.join(context.extensionPath, "media", "sidebar.html"),
         runtime: {
             getActiveEditor: () => vscode.window.activeTextEditor ?? null,
@@ -96,18 +101,46 @@ export function activate(context: vscode.ExtensionContext): void {
                 const buffer = await readFile(absolutePath);
                 return buffer.toString("utf8");
             },
-            replaceDocumentContent: async (editor, content) => {
-                const lastLineIndex = Math.max(editor.document.lineCount - 1, 0);
-                const lastLine = editor.document.lineAt(lastLineIndex);
-                const range = new vscode.Range(
-                    new vscode.Position(0, 0),
-                    new vscode.Position(lastLineIndex, lastLine.text.length),
+            applyVerifiedFiles: async (files) => {
+                const documents = await Promise.all(
+                    files.map((item) => vscode.workspace.openTextDocument(vscode.Uri.file(item.absolutePath))),
                 );
-                return editor.edit((editBuilder) => {
-                    editBuilder.replace(range, content);
-                });
+                const edit = new vscode.WorkspaceEdit();
+                for (let index = 0; index < files.length; index += 1) {
+                    const document = documents[index];
+                    const lastLineIndex = Math.max(document.lineCount - 1, 0);
+                    const lastLine = document.lineAt(lastLineIndex);
+                    const range = new vscode.Range(
+                        new vscode.Position(0, 0),
+                        new vscode.Position(lastLineIndex, lastLine.text.length),
+                    );
+                    edit.replace(document.uri, range, files[index].content);
+                }
+                const applied = await vscode.workspace.applyEdit(edit);
+                if (!applied) {
+                    return false;
+                }
+                for (const document of documents) {
+                    const saved = await document.save();
+                    if (!saved) {
+                        return false;
+                    }
+                }
+                return true;
             },
-            saveDocument: async (document) => document.save(),
+            openWorkspaceFile: async (workspaceFilePath) => {
+                const folders = vscode.workspace.workspaceFolders ?? [];
+                for (const folder of folders) {
+                    const candidate = path.join(folder.uri.fsPath, workspaceFilePath);
+                    if (!existsSync(candidate)) {
+                        continue;
+                    }
+                    const document = await vscode.workspace.openTextDocument(vscode.Uri.file(candidate));
+                    await vscode.window.showTextDocument(document, { preview: false });
+                    return true;
+                }
+                return false;
+            },
         },
     });
 
@@ -216,6 +249,10 @@ export function activate(context: vscode.ExtensionContext): void {
 
             await revealSidebar();
             await sidebarProvider.showExplainEntity(entity.entity_id);
+        }),
+        vscode.commands.registerCommand(COMMAND_MANAGE_CODING_PROFILES, async () => {
+            await profileManager.showManageProfilesQuickPick();
+            await profileManager.syncToBackend();
         }),
     );
 

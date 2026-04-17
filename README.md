@@ -1,15 +1,15 @@
 # TailEvents
 
-TailEvents is a local-first backend plus VS Code extension for explaining code from coding-agent traces.
+TailEvents is a local-first backend plus VS Code extension for explaining Python code from coding-agent traces and supporting a history-first coding workspace.
 
 It records structured change events, maps them to code entities with AST indexing, and serves two explanation paths:
 
 - fast summaries for hover
 - streamed detailed explanations for the sidebar
-- baseline-aware explanation metadata and structured caller/callee context
-- persistent coding-task history with recent-task review and prompt/context reuse
+- baseline-aware history provenance and structured caller/callee context
+- persistent coding-task history, replay preparation, multi-file verified drafts, and apply confirmation
 
-The current repository only keeps the implemented product surface. Design notes, plans, local progress logs, and tests stay out of version control.
+The repository only keeps the implemented product surface. Local plans, tests, progress logs, and private notes stay out of version control.
 
 ## What It Does
 
@@ -22,9 +22,11 @@ The current repository only keeps the implemented product surface. Design notes,
 - Shows structured caller/callee context in the sidebar instead of free-form related-entity text
 - Tracks explanation telemetry in admin stats
 - Supports baseline onboarding for existing Python files
-- Exposes a minimal coding-task loop in the VS Code extension:
+- Exposes a backend-orchestrated coding loop:
   `view -> edit -> verify -> Apply -> event`
-- Persists coding-task history with task status, transcript, model output, verified draft, and apply result
+- Persists coding-task history with pagination, detail review, replay lineage, verified per-file drafts, and apply-event state
+- Supports coding-profile sync from the extension plus backend environment fallback profiles
+- Exposes global coding capability discovery for repo observation and multi-file tasks
 
 ## Runtime Shape
 
@@ -55,15 +57,19 @@ Coding Agent / Baseline Onboarding
 
 ### Code
 
-- The extension starts a coding task on the backend
-- The backend drives a constrained tool loop
+- The extension starts a backend-orchestrated coding task from the active Python file
+- The `Code` panel uses a prompt-first layout with compact target metadata and state-aware `Working` / `History` sections
+- The backend drives a constrained tool loop and returns verified drafts per file
 - Only a verified draft can be applied
-- Accepted edits are written back as new events
-- Recent tasks can be reopened from the sidebar with:
-  - `Recent Tasks`
-  - `History Detail`
+- Accepted drafts are written back through one workspace edit and then confirmed to the backend for event persistence
+- Task history supports:
+  - paginated recent-task review
+  - prompt-preview task cards plus summary-first detail review
+  - detail inspection for prompt, context, transcript, model output, verified draft, and apply status
   - `Reuse Prompt/Context`
-- Reusing history copies prompt/context only and does not switch the current target file automatically
+  - `Replay Task` preparation with lineage metadata
+- Replay-aware tasks surface a compact lineage badge and can jump back to the source task within the loaded history slice
+- Coding profiles can be managed from the extension through `TailEvents: Manage Coding Profiles` and synced to the backend
 
 ### Baseline
 
@@ -85,7 +91,11 @@ Coding Agent / Baseline Onboarding
 - `GET /api/v1/coding/tasks/{task_id}`
 - `GET /api/v1/coding/tasks/{task_id}/stream`
 - `POST /api/v1/coding/tasks/{task_id}/applied`
+- `POST /api/v1/coding/tasks/{task_id}/retry-events`
 - `POST /api/v1/coding/tasks/{task_id}/cancel`
+- `POST /api/v1/profiles/sync`
+- `GET /api/v1/profiles/status`
+- `GET /api/v1/coding/capabilities`
 - `POST /api/v1/baseline/onboard-file`
 - `GET /api/v1/admin/stats`
 
@@ -132,11 +142,11 @@ For extension development, open the repo in VS Code and start the extension host
 ## Current Boundaries
 
 - Python is the only indexed language today
-- Coding tasks are still single-file oriented
-- Task history is currently a recent-task workspace view with no pagination or replay flow
+- The current extension still launches coding tasks from the active file; richer explicit file-pick UI is not finished yet
+- Profile management is command-driven today; a fuller sidebar profile surface is not shipped yet
+- `mcp` and `skills` are capability placeholders and currently report `not implemented in Phase 4`
 - Graph analysis is still a stub
-- Container/member relation data is stored but not shown in the current UI
-- Streamed detailed explanation is implemented, but multi-model routing is only reserved in config and not enabled by default
+- Explanation requests still use the backend default profile; synced coding profiles do not change the explanation cache path
 
 ## License
 

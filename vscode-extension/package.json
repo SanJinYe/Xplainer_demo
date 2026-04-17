@@ -16,7 +16,8 @@
     "onCommand:tailEvents.explainCurrentSymbol",
     "onCommand:tailEvents.onboardRepository",
     "onCommand:tailEvents.openPanel",
-    "onCommand:tailEvents.refreshPanel"
+    "onCommand:tailEvents.refreshPanel",
+    "onCommand:tailEvents.manageCodingProfiles"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -36,6 +37,10 @@
       {
         "command": "tailEvents.refreshPanel",
         "title": "TailEvents: Refresh Panel"
+      },
+      {
+        "command": "tailEvents.manageCodingProfiles",
+        "title": "TailEvents: Manage Coding Profiles"
       }
     ],
     "configuration": {
