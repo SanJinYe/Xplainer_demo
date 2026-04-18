@@ -715,14 +715,14 @@ class ExplanationEngine(ExplanationEngineProtocol):
             role="caller",
             other_id_getter=lambda relation: relation.source,
             allowed_type=RelationType.CALLS,
-            limit=2,
+            limit=5,
         )
         callees = await self._load_relation_items(
             relations=outgoing_relations,
             role="callee",
             other_id_getter=lambda relation: relation.target,
             allowed_type=RelationType.CALLS,
-            limit=2,
+            limit=5,
         )
         containers = await self._load_relation_items(
             relations=incoming_relations,

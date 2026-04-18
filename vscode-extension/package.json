@@ -27,11 +27,13 @@
     "commands": [
       {
         "command": "tailEvents.explainCurrentSymbol",
-        "title": "TailEvents: Explain Current Symbol"
+        "title": "TailEvents: Explain Current Symbol",
+        "icon": "$(search)"
       },
       {
         "command": "tailEvents.onboardRepository",
-        "title": "TailEvents: Onboard Repository"
+        "title": "TailEvents: Onboard Repository",
+        "icon": "$(repo-clone)"
       },
       {
         "command": "tailEvents.openPanel",
@@ -99,6 +101,29 @@
           "id": "tailevents.sidebarView",
           "name": "Code Explainer",
           "type": "webview"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "tailEvents.onboardRepository",
+          "when": "view == tailevents.sidebarView",
+          "group": "navigation@1"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "tailEvents.explainCurrentSymbol",
+          "when": "resourceScheme == file && editorLangId == python",
+          "group": "navigation@1"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "tailEvents.explainCurrentSymbol",
+          "when": "resourceScheme == file && editorLangId == python",
+          "group": "navigation@1"
         }
       ]
     }

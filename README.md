@@ -62,7 +62,7 @@ Coding Agent / Baseline Onboarding
 - Explanation APIs accept `profile_id` and return `resolved_profile_id`
 - Sidebar shows a baseline/mixed disclaimer when explanation history is not fully traced
 - Sidebar renders `Who calls this` and `What this calls` from structured relation data
-- Sidebar renders `Global Impact` with bounded upstream/downstream path summaries
+- Sidebar renders `Global Impact` as a bounded best-effort upstream/downstream path summary
 - Sidebar renders `External Docs` from the explanation payload
 
 ### Code
@@ -91,7 +91,7 @@ Coding Agent / Baseline Onboarding
 
 ### Baseline
 
-- `TailEvents: Onboard Repository` scans Python files in the current workspace
+- `TailEvents: Onboard Repository` is available from the TailEvents sidebar title and scans Python files in the current workspace
 - Each file is posted to the backend as a baseline event
 - Indexed entities become explainable even before real traced edits exist
 
@@ -175,6 +175,7 @@ For extension development, open the repo in VS Code and start the extension host
 - History filtering and incremental loading are shipped in the same page; a richer standalone history presentation is still not shipped
 - `mcp` and `skills` are capability placeholders and currently report `not implemented in Phase 4`
 - Graph support is intentionally limited to `subgraph` and `impact-paths`; graph cache, community detection, cycle reports, and importance ranking are not shipped
+- The current `Global Impact` surface is best-effort and bounded; deeper graph semantics are intentionally deferred
 - External docs are intentionally limited to `pydoc` plus authorized workspace `.md` / `.txt` files; there is no network retrieval
 - Repo-scale autonomous observation and broader multi-round task planning are not shipped yet
 

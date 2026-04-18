@@ -312,12 +312,25 @@ class GraphService(GraphServiceProtocol):
                 truncated = True
                 continue
 
-            if self._is_boundary(
+            expandable_neighbors = [
+                (neighbor_id, relation_type)
+                for neighbor_id, relation_type in self._impact_neighbors(
+                    entity_id=current_id,
+                    direction=direction,
+                    relation_maps=relation_maps,
+                )
+                if neighbor_id in entities and neighbor_id not in path
+            ]
+            strict_boundary = self._is_boundary(
                 entity_id=current_id,
                 direction=direction,
                 entities=entities,
                 relation_maps=relation_maps,
-            ):
+            )
+            reached_frontier = len(expandable_neighbors) == 0
+            hit_hop_ceiling = hop_count >= self._max_impact_hops
+
+            if strict_boundary or reached_frontier or hit_hop_ceiling:
                 candidates.append(
                     self._build_impact_path(
                         direction=direction,
@@ -326,20 +339,16 @@ class GraphService(GraphServiceProtocol):
                         cost=cost,
                         composed_hops=composed_hops,
                         hop_count=hop_count,
+                        truncated=not strict_boundary,
                     )
                 )
+                if hit_hop_ceiling and not strict_boundary:
+                    truncated = True
                 if len(candidates) >= limit:
                     break
                 continue
 
-            for neighbor_id, relation_type in self._impact_neighbors(
-                entity_id=current_id,
-                direction=direction,
-                relation_maps=relation_maps,
-            ):
-                if neighbor_id not in entities or neighbor_id in path:
-                    continue
-
+            for neighbor_id, relation_type in expandable_neighbors:
                 next_cost = cost + (2 if relation_type == RelationType.COMPOSED_OF.value else 1)
                 next_composed = composed_hops + int(
                     relation_type == RelationType.COMPOSED_OF.value
@@ -413,6 +422,7 @@ class GraphService(GraphServiceProtocol):
         cost: int,
         composed_hops: int,
         hop_count: int,
+        truncated: bool,
     ) -> GlobalImpactPath:
         display_path = list(reversed(path)) if direction == "upstream" else path
         steps = [self._to_path_step(entities[entity_id]) for entity_id in display_path]
@@ -425,7 +435,7 @@ class GraphService(GraphServiceProtocol):
             composed_hops=composed_hops,
             terminal_entity_id=terminal.entity_id,
             terminal_qualified_name=terminal.qualified_name,
-            truncated=False,
+            truncated=truncated,
         )
 
     def _to_graph_node(self, entity: CodeEntity) -> GraphNode:

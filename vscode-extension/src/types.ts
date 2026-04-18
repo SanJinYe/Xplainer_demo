@@ -553,6 +553,7 @@ export interface SidebarViewModel {
     relatedEntities: RelatedEntityViewModel[];
     globalImpactPaths: GlobalImpactPathViewModel[];
     globalImpactSummary: string | null;
+    globalImpactEmptyText: string;
     externalDocs: ExternalDocViewModel[];
     externalDocsPlaceholder: string;
     profile: EffectiveProfileViewModel | null;

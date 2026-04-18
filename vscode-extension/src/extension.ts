@@ -6,6 +6,11 @@ import { readFile } from "node:fs/promises";
 import * as vscode from "vscode";
 
 import { TailEventsApiClient } from "./api-client";
+import {
+    buildAuthorizedDocQuickPickItems,
+    compareAuthorizedDocCandidates,
+    isWorkspaceRootReadme,
+} from "./authorized-docs";
 import { TailEventsHoverProvider } from "./hover-provider";
 import { findEntityByLocation } from "./location-lookup";
 import {
@@ -310,13 +315,10 @@ export function activate(context: vscode.ExtensionContext): void {
                 storedSelection.length > 0
                     ? storedSelection
                     : candidates
-                        .filter((item) => item.workspaceFilePath.toLowerCase() === "readme.md")
+                        .filter((item) => isWorkspaceRootReadme(item.workspaceFilePath))
                         .map((item) => item.workspaceFilePath);
             const quickPick = await vscode.window.showQuickPick(
-                candidates.map((item) => ({
-                    label: item.workspaceFilePath,
-                    picked: defaultSelection.includes(item.workspaceFilePath),
-                })),
+                buildAuthorizedDocQuickPickItems(candidates, defaultSelection),
                 {
                     canPickMany: true,
                     title: "TailEvents: Manage Authorized Docs",
@@ -493,9 +495,7 @@ export function activate(context: vscode.ExtensionContext): void {
         for (const item of collected) {
             deduped.set(item.workspaceFilePath, item);
         }
-        return [...deduped.values()].sort((left, right) => {
-            return left.workspaceFilePath.localeCompare(right.workspaceFilePath);
-        });
+        return [...deduped.values()].sort(compareAuthorizedDocCandidates);
     }
 
 }

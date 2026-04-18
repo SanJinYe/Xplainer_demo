@@ -530,7 +530,7 @@
                     <div class="panel-box">
                         <h4>Global Impact</h4>
                         <p id="global-impact-summary" class="muted hidden"></p>
-                        <p id="global-impact-empty" class="muted hidden">No global paths.</p>
+                        <p id="global-impact-empty" class="muted hidden">No global paths yet.</p>
                         <ul id="global-impact-list" class="related-list"></ul>
                     </div>
                     <div class="panel-box">
@@ -1686,7 +1686,11 @@
 
             renderRelatedList("callers-list", "callers-empty", data.callers);
             renderRelatedList("callees-list", "callees-empty", data.callees);
-            renderGlobalImpactList(data.globalImpactPaths, data.globalImpactSummary);
+            renderGlobalImpactList(
+                data.globalImpactPaths,
+                data.globalImpactSummary,
+                data.globalImpactEmptyText,
+            );
             renderExternalDocsList(data.externalDocs, data.externalDocsPlaceholder);
         }
 
@@ -1716,12 +1720,13 @@
             });
         }
 
-        function renderGlobalImpactList(items, summary) {
+        function renderGlobalImpactList(items, summary, emptyText) {
             const summaryElement = document.getElementById("global-impact-summary");
             summaryElement.textContent = summary || "";
             summaryElement.classList.toggle("hidden", !summary);
 
             const empty = document.getElementById("global-impact-empty");
+            empty.textContent = emptyText || "No global paths yet.";
             empty.classList.toggle("hidden", items.length > 0);
 
             const list = document.getElementById("global-impact-list");

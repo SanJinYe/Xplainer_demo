@@ -46,7 +46,7 @@ import type {
 } from "./types";
 
 const EMPTY_MESSAGE =
-    "No entity selected. Run TailEvents: Explain Current Symbol or use View Details from hover.";
+    "No entity selected. Use the editor title button, the editor context menu, or View Details from hover.";
 const READY_TO_RUN_MESSAGE = "Ready to run a backend-orchestrated coding task.";
 const NO_ACTIVE_EDITOR_MESSAGE = "No active editor.";
 const UNSAVED_FILE_MESSAGE = "Only saved Python files are supported.";
@@ -2077,6 +2077,7 @@ function buildInitialViewModel(
         relatedEntities: [],
         globalImpactPaths: [],
         globalImpactSummary: null,
+        globalImpactEmptyText: "No global paths yet.",
         externalDocs: [],
         externalDocsPlaceholder: "暂未接入",
         profile: {
@@ -2112,6 +2113,7 @@ function mergeFinalExplanation(
     viewModel.relatedEntities = buildRelatedEntities(explanation);
     viewModel.globalImpactPaths = buildGlobalImpactPaths(explanation);
     viewModel.globalImpactSummary = buildGlobalImpactSummary(explanation);
+    viewModel.globalImpactEmptyText = buildGlobalImpactEmptyText(explanation);
     viewModel.externalDocs = buildExternalDocs(explanation);
     viewModel.externalDocsPlaceholder =
         viewModel.externalDocs.length > 0 ? "" : "暂未接入";
@@ -2178,6 +2180,16 @@ function buildGlobalImpactSummary(explanation: BackendEntityExplanation): string
     }
     const suffix = subgraph.truncated ? " • truncated" : "";
     return `Depth ${subgraph.depth} • ${subgraph.node_count} nodes • ${subgraph.edge_count} edges${suffix}`;
+}
+
+function buildGlobalImpactEmptyText(explanation: BackendEntityExplanation): string {
+    const globalContext = explanation.relation_context?.global;
+    const hasSubgraph = globalContext?.subgraph !== null && globalContext?.subgraph !== undefined;
+    const hasPaths = (globalContext?.paths ?? []).length > 0;
+    if (hasSubgraph && !hasPaths) {
+        return "No terminal paths yet. Local relations and the subgraph summary are still available.";
+    }
+    return "No global paths yet.";
 }
 
 function buildExternalDocs(explanation: BackendEntityExplanation) {
