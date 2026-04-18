@@ -18,6 +18,8 @@ export type BackendCodingTaskStatus =
     | "applied_event_pending"
     | "applied_without_events";
 export type CodingTaskLaunchMode = "new" | "replay";
+export type TargetSelectionMode = "follow_active" | "explicit";
+export type CodePickerKind = "target" | "context" | "editable";
 export type CodingTaskRequestedCapability =
     | "repo_observe"
     | "multi_file"
@@ -488,8 +490,34 @@ export interface CodingTaskHistoryDetailViewModel {
     appliedEventId: string | null;
 }
 
+export interface CodePickerCandidateViewModel {
+    path: string;
+    selected: boolean;
+}
+
+export interface CodePickerViewModel {
+    open: boolean;
+    search: string;
+    candidates: CodePickerCandidateViewModel[];
+}
+
+export interface CodeExplainEntityViewModel {
+    available: boolean;
+    entityId: string | null;
+    entityName: string | null;
+    filePath: string | null;
+    canUseAsTarget: boolean;
+}
+
 export interface CodeViewModel {
     filePath: string | null;
+    targetSelectionMode: TargetSelectionMode;
+    contextFiles: string[];
+    editableFiles: string[];
+    targetPicker: CodePickerViewModel;
+    contextPicker: CodePickerViewModel;
+    editablePicker: CodePickerViewModel;
+    explainEntity: CodeExplainEntityViewModel;
     status: CodeTaskStatus;
     launchMode: CodingTaskLaunchMode;
     sourceTaskId: string | null;
@@ -538,16 +566,15 @@ export interface SidebarCodeMessage {
     data: CodeViewModel;
 }
 
-export interface SidebarCodeFillInputsMessage {
-    type: "code:fillInputs";
+export interface SidebarCodeFillPromptMessage {
+    type: "code:fillPrompt";
     prompt: string;
-    contextFiles: string[];
 }
 
 export type SidebarMessageToWebview =
     | SidebarModeMessage
     | SidebarCodeMessage
-    | SidebarCodeFillInputsMessage
+    | SidebarCodeFillPromptMessage
     | SidebarEmptyMessage
     | SidebarLoadingMessage
     | SidebarUpdateMessage
@@ -574,7 +601,58 @@ export interface SidebarOpenRelatedEntityMessage {
 export interface SidebarRunTaskMessage {
     type: "runTask";
     prompt: string;
-    contextFiles: string[];
+}
+
+export interface SidebarSetCodePickerOpenMessage {
+    type: "setCodePickerOpen";
+    kind: CodePickerKind;
+    open: boolean;
+}
+
+export interface SidebarSetCodePickerSearchMessage {
+    type: "setCodePickerSearch";
+    kind: CodePickerKind;
+    search: string;
+}
+
+export interface SidebarSetTargetPickerSelectionMessage {
+    type: "setTargetPickerSelection";
+    path: string;
+}
+
+export interface SidebarUseActiveTargetFileMessage {
+    type: "useActiveTargetFile";
+}
+
+export interface SidebarUseExplainFileAsTargetMessage {
+    type: "useExplainFileAsTarget";
+}
+
+export interface SidebarBackToExplainEntityMessage {
+    type: "backToExplainEntity";
+}
+
+export interface SidebarToggleCodePickerSelectionMessage {
+    type: "toggleCodePickerSelection";
+    kind: "context" | "editable";
+    path: string;
+    selected: boolean;
+}
+
+export interface SidebarApplyCodePickerSelectionMessage {
+    type: "applyCodePickerSelection";
+    kind: CodePickerKind;
+}
+
+export interface SidebarCancelCodePickerSelectionMessage {
+    type: "cancelCodePickerSelection";
+    kind: CodePickerKind;
+}
+
+export interface SidebarRemoveSelectedFileMessage {
+    type: "removeSelectedFile";
+    kind: "context" | "editable";
+    path: string;
 }
 
 export interface SidebarCancelTaskMessage {
@@ -606,6 +684,16 @@ export type SidebarMessageFromWebview =
     | SidebarSetModeMessage
     | SidebarOpenRelatedEntityMessage
     | SidebarRunTaskMessage
+    | SidebarSetCodePickerOpenMessage
+    | SidebarSetCodePickerSearchMessage
+    | SidebarSetTargetPickerSelectionMessage
+    | SidebarUseActiveTargetFileMessage
+    | SidebarUseExplainFileAsTargetMessage
+    | SidebarBackToExplainEntityMessage
+    | SidebarToggleCodePickerSelectionMessage
+    | SidebarApplyCodePickerSelectionMessage
+    | SidebarCancelCodePickerSelectionMessage
+    | SidebarRemoveSelectedFileMessage
     | SidebarCancelTaskMessage
     | SidebarApplyTaskMessage
     | SidebarSelectHistoryTaskMessage

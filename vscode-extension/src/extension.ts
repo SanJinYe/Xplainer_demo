@@ -92,10 +92,25 @@ export function activate(context: vscode.ExtensionContext): void {
                 }
                 return null;
             },
+            listWorkspacePythonFiles: async () => {
+                const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
+                return collectWorkspacePythonCandidates(workspaceFolders);
+            },
             getOpenDocumentByAbsolutePath: (absolutePath) => {
                 return vscode.workspace.textDocuments.find((document) => {
                     return document.uri.scheme === "file" && document.uri.fsPath === absolutePath;
                 }) ?? null;
+            },
+            openWorkspaceDocument: async (workspaceFilePath) => {
+                const folders = vscode.workspace.workspaceFolders ?? [];
+                for (const folder of folders) {
+                    const candidate = path.join(folder.uri.fsPath, workspaceFilePath);
+                    if (!existsSync(candidate)) {
+                        continue;
+                    }
+                    return vscode.workspace.openTextDocument(vscode.Uri.file(candidate));
+                }
+                return null;
             },
             readFileText: async (absolutePath) => {
                 const buffer = await readFile(absolutePath);
@@ -319,6 +334,12 @@ export function activate(context: vscode.ExtensionContext): void {
     async function collectOnboardingCandidates(
         workspaceFolders: readonly vscode.WorkspaceFolder[],
     ) {
+        return collectWorkspacePythonCandidates(workspaceFolders);
+    }
+
+    async function collectWorkspacePythonCandidates(
+        workspaceFolders: readonly vscode.WorkspaceFolder[],
+    ) {
         const candidates = [];
         for (const folder of workspaceFolders) {
             const matches = await vscode.workspace.findFiles(
@@ -339,6 +360,7 @@ export function activate(context: vscode.ExtensionContext): void {
             return left.absolutePath.localeCompare(right.absolutePath);
         });
     }
+
 }
 
 export function deactivate(): void {

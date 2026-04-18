@@ -57,8 +57,9 @@ Coding Agent / Baseline Onboarding
 
 ### Code
 
-- The extension starts a backend-orchestrated coding task from the active Python file
-- The `Code` panel uses a prompt-first layout with compact target metadata and state-aware `Working` / `History` sections
+- The extension starts a backend-orchestrated coding task from a workspace Python target, defaulting to the active file but allowing an explicit target plus up to 3 readonly context files and 1 additional editable file
+- The `Code` panel uses a prompt-first layout with compact target metadata, inline sidebar file pickers, and state-aware `Working` / `History` sections
+- Target control supports `Use Active File`, `Use Explain File as Target`, and `Back to Explain Entity` without leaving the sidebar workflow
 - The backend drives a constrained tool loop and returns verified drafts per file
 - Only a verified draft can be applied
 - Accepted drafts are written back through one workspace edit and then confirmed to the backend for event persistence
@@ -69,6 +70,7 @@ Coding Agent / Baseline Onboarding
   - `Reuse Prompt/Context`
   - `Replay Task` preparation with lineage metadata
 - Replay-aware tasks surface a compact lineage badge and can jump back to the source task within the loaded history slice
+- Reuse keeps the current target while restoring prompt/context; replay restores target, context, editable files, and lineage metadata
 - Coding profiles can be managed from the extension through `TailEvents: Manage Coding Profiles` and synced to the backend
 
 ### Baseline
@@ -142,8 +144,8 @@ For extension development, open the repo in VS Code and start the extension host
 ## Current Boundaries
 
 - Python is the only indexed language today
-- The current extension still launches coding tasks from the active file; richer explicit file-pick UI is not finished yet
-- Profile management is command-driven today; a fuller sidebar profile surface is not shipped yet
+- Profile management is command-driven today; richer in-sidebar profile and capability visibility is not shipped yet
+- Task history still lives in the same page, and richer pagination/presentation is not shipped yet
 - `mcp` and `skills` are capability placeholders and currently report `not implemented in Phase 4`
 - Graph analysis is still a stub
 - Explanation requests still use the backend default profile; synced coding profiles do not change the explanation cache path

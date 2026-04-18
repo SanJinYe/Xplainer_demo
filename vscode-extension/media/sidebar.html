@@ -344,6 +344,86 @@
         .panel-caption {
             font-size: 0.92em;
         }
+
+        .selection-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .selection-list {
+            gap: 6px;
+        }
+
+        .selection-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            padding: 8px 10px;
+            border: 1px solid var(--vscode-list-hoverBackground);
+            border-radius: 6px;
+        }
+
+        .selection-path {
+            min-width: 0;
+            word-break: break-word;
+        }
+
+        .picker-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-top: 10px;
+            padding: 10px;
+            border: 1px solid var(--vscode-list-hoverBackground);
+            border-radius: 8px;
+        }
+
+        .picker-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            max-height: 220px;
+            overflow-y: auto;
+        }
+
+        .picker-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 8px;
+            border-radius: 6px;
+        }
+
+        .picker-item:hover {
+            background: var(--vscode-list-hoverBackground);
+        }
+
+        .picker-item label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            width: 100%;
+            min-width: 0;
+            cursor: pointer;
+        }
+
+        .picker-item input {
+            width: auto;
+            margin: 0;
+            padding: 0;
+            border: none;
+        }
+
+        .picker-footer {
+            display: flex;
+            gap: 8px;
+            justify-content: flex-end;
+        }
     </style>
 </head>
 <body>
@@ -413,8 +493,38 @@
             <section class="panel-box code-shell">
                 <div class="code-meta">
                     <div class="code-meta-copy">
-                        <p class="eyebrow muted">Target File</p>
-                        <p id="code-file-path" class="muted code-file-path">No file selected.</p>
+                        <p class="eyebrow muted">Target</p>
+                        <div class="row">
+                            <p id="code-file-path" class="muted code-file-path">No file selected.</p>
+                            <span id="code-target-mode" class="badge hidden">explicit</span>
+                        </div>
+                        <div class="row">
+                            <button id="pick-target-button" class="action-button" type="button">Change Target</button>
+                            <button id="use-active-target-button" class="action-button" type="button">
+                                Use Active File
+                            </button>
+                        </div>
+                        <div id="explain-target-actions" class="row hidden">
+                            <button id="use-explain-target-button" class="action-button" type="button">
+                                Use Explain File as Target
+                            </button>
+                            <button id="back-to-explain-button" class="action-button" type="button">
+                                Back to Explain Entity
+                            </button>
+                        </div>
+                        <div id="target-picker-panel" class="picker-panel hidden">
+                            <input id="target-picker-search" placeholder="Filter workspace Python files" />
+                            <p id="target-picker-empty" class="muted hidden">No matching files.</p>
+                            <ul id="target-picker-list" class="picker-list"></ul>
+                            <div class="picker-footer">
+                                <button id="target-picker-apply" class="action-button primary" type="button">
+                                    Apply Selection
+                                </button>
+                                <button id="target-picker-cancel" class="action-button" type="button">
+                                    Cancel
+                                </button>
+                            </div>
+                        </div>
                     </div>
                     <div class="row code-meta-badges">
                         <span id="code-status-badge" class="badge">idle</span>
@@ -442,12 +552,53 @@
                     <div class="summary-main">
                         <span class="summary-title">Advanced</span>
                     </div>
-                    <span id="advanced-summary" class="summary-hint muted">Context (0/2)</span>
+                    <span id="advanced-summary" class="summary-hint muted">Context (0/3) Editable (0/1)</span>
                 </summary>
                 <div class="collapsible-body">
-                    <input id="context-file-1" placeholder="relative/path/to/context_file.py" />
-                    <input id="context-file-2" placeholder="relative/path/to/another_context.py" />
-                    <p class="muted panel-caption">At most 2 files. These files are view-only and never edited.</p>
+                    <div class="selection-group">
+                        <div class="row">
+                            <h4>Readonly Context Files</h4>
+                            <button id="pick-context-button" class="action-button" type="button">Select</button>
+                        </div>
+                        <p class="muted panel-caption">At most 3 files. These files are view-only and never edited.</p>
+                        <p id="context-files-empty" class="muted">No context files selected.</p>
+                        <ul id="context-files-list" class="related-list selection-list"></ul>
+                        <div id="context-picker-panel" class="picker-panel hidden">
+                            <input id="context-picker-search" placeholder="Filter workspace Python files" />
+                            <p id="context-picker-empty" class="muted hidden">No matching files.</p>
+                            <ul id="context-picker-list" class="picker-list"></ul>
+                            <div class="picker-footer">
+                                <button id="context-picker-apply" class="action-button primary" type="button">
+                                    Apply Selection
+                                </button>
+                                <button id="context-picker-cancel" class="action-button" type="button">
+                                    Cancel
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="selection-group">
+                        <div class="row">
+                            <h4>Editable Files</h4>
+                            <button id="pick-editable-button" class="action-button" type="button">Select</button>
+                        </div>
+                        <p class="muted panel-caption">At most 1 additional file. These files can be edited by the task.</p>
+                        <p id="editable-files-empty" class="muted">No editable files selected.</p>
+                        <ul id="editable-files-list" class="related-list selection-list"></ul>
+                        <div id="editable-picker-panel" class="picker-panel hidden">
+                            <input id="editable-picker-search" placeholder="Filter workspace Python files" />
+                            <p id="editable-picker-empty" class="muted hidden">No matching files.</p>
+                            <ul id="editable-picker-list" class="picker-list"></ul>
+                            <div class="picker-footer">
+                                <button id="editable-picker-apply" class="action-button primary" type="button">
+                                    Apply Selection
+                                </button>
+                                <button id="editable-picker-cancel" class="action-button" type="button">
+                                    Cancel
+                                </button>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </details>
 
@@ -527,6 +678,8 @@
                             </div>
                             <h4>Context Files</h4>
                             <pre id="history-detail-context"></pre>
+                            <h4>Editable Files</h4>
+                            <pre id="history-detail-editable"></pre>
                             <h4>Apply Result</h4>
                             <pre id="history-detail-apply"></pre>
                             <div id="history-detail-error-block" class="hidden">
@@ -585,11 +738,24 @@
         const retryButton = document.getElementById("retry-button");
 
         const promptInput = document.getElementById("code-prompt");
-        const contextFile1 = document.getElementById("context-file-1");
-        const contextFile2 = document.getElementById("context-file-2");
         const runButton = document.getElementById("run-button");
         const cancelButton = document.getElementById("cancel-button");
         const applyButton = document.getElementById("apply-button");
+        const pickTargetButton = document.getElementById("pick-target-button");
+        const useActiveTargetButton = document.getElementById("use-active-target-button");
+        const useExplainTargetButton = document.getElementById("use-explain-target-button");
+        const backToExplainButton = document.getElementById("back-to-explain-button");
+        const pickContextButton = document.getElementById("pick-context-button");
+        const pickEditableButton = document.getElementById("pick-editable-button");
+        const targetPickerSearch = document.getElementById("target-picker-search");
+        const contextPickerSearch = document.getElementById("context-picker-search");
+        const editablePickerSearch = document.getElementById("editable-picker-search");
+        const targetPickerApplyButton = document.getElementById("target-picker-apply");
+        const contextPickerApplyButton = document.getElementById("context-picker-apply");
+        const editablePickerApplyButton = document.getElementById("editable-picker-apply");
+        const targetPickerCancelButton = document.getElementById("target-picker-cancel");
+        const contextPickerCancelButton = document.getElementById("context-picker-cancel");
+        const editablePickerCancelButton = document.getElementById("editable-picker-cancel");
         const reuseHistoryButton = document.getElementById("reuse-history-button");
         const replayHistoryButton = document.getElementById("replay-history-button");
         const lineageBadgeButton = document.getElementById("code-lineage-badge");
@@ -602,6 +768,20 @@
 
         let currentMode = "explain";
         let latestCodeState = {
+            filePath: null,
+            targetSelectionMode: "follow_active",
+            contextFiles: [],
+            editableFiles: [],
+            targetPicker: { open: false, search: "", candidates: [] },
+            contextPicker: { open: false, search: "", candidates: [] },
+            editablePicker: { open: false, search: "", candidates: [] },
+            explainEntity: {
+                available: false,
+                entityId: null,
+                entityName: null,
+                filePath: null,
+                canUseAsTarget: false,
+            },
             status: "idle",
             launchMode: "new",
             sourceTaskId: null,
@@ -635,7 +815,6 @@
             vscode.postMessage({
                 type: "runTask",
                 prompt: promptInput.value,
-                contextFiles: [contextFile1.value, contextFile2.value],
             });
         });
 
@@ -647,12 +826,88 @@
             vscode.postMessage({ type: "applyTask" });
         });
 
-        contextFile1.addEventListener("input", () => {
-            renderAdvancedSummary();
+        pickTargetButton.addEventListener("click", () => {
+            vscode.postMessage({
+                type: "setCodePickerOpen",
+                kind: "target",
+                open: !latestCodeState.targetPicker.open,
+            });
         });
 
-        contextFile2.addEventListener("input", () => {
-            renderAdvancedSummary();
+        useActiveTargetButton.addEventListener("click", () => {
+            vscode.postMessage({ type: "useActiveTargetFile" });
+        });
+
+        useExplainTargetButton.addEventListener("click", () => {
+            vscode.postMessage({ type: "useExplainFileAsTarget" });
+        });
+
+        backToExplainButton.addEventListener("click", () => {
+            vscode.postMessage({ type: "backToExplainEntity" });
+        });
+
+        pickContextButton.addEventListener("click", () => {
+            vscode.postMessage({
+                type: "setCodePickerOpen",
+                kind: "context",
+                open: !latestCodeState.contextPicker.open,
+            });
+        });
+
+        pickEditableButton.addEventListener("click", () => {
+            vscode.postMessage({
+                type: "setCodePickerOpen",
+                kind: "editable",
+                open: !latestCodeState.editablePicker.open,
+            });
+        });
+
+        targetPickerSearch.addEventListener("input", () => {
+            vscode.postMessage({
+                type: "setCodePickerSearch",
+                kind: "target",
+                search: targetPickerSearch.value,
+            });
+        });
+
+        contextPickerSearch.addEventListener("input", () => {
+            vscode.postMessage({
+                type: "setCodePickerSearch",
+                kind: "context",
+                search: contextPickerSearch.value,
+            });
+        });
+
+        editablePickerSearch.addEventListener("input", () => {
+            vscode.postMessage({
+                type: "setCodePickerSearch",
+                kind: "editable",
+                search: editablePickerSearch.value,
+            });
+        });
+
+        targetPickerApplyButton.addEventListener("click", () => {
+            vscode.postMessage({ type: "applyCodePickerSelection", kind: "target" });
+        });
+
+        contextPickerApplyButton.addEventListener("click", () => {
+            vscode.postMessage({ type: "applyCodePickerSelection", kind: "context" });
+        });
+
+        editablePickerApplyButton.addEventListener("click", () => {
+            vscode.postMessage({ type: "applyCodePickerSelection", kind: "editable" });
+        });
+
+        targetPickerCancelButton.addEventListener("click", () => {
+            vscode.postMessage({ type: "cancelCodePickerSelection", kind: "target" });
+        });
+
+        contextPickerCancelButton.addEventListener("click", () => {
+            vscode.postMessage({ type: "cancelCodePickerSelection", kind: "context" });
+        });
+
+        editablePickerCancelButton.addEventListener("click", () => {
+            vscode.postMessage({ type: "cancelCodePickerSelection", kind: "editable" });
         });
 
         reuseHistoryButton.addEventListener("click", () => {
@@ -721,11 +976,8 @@
                 case "code:update":
                     renderCode(message.data);
                     break;
-                case "code:fillInputs":
+                case "code:fillPrompt":
                     promptInput.value = message.prompt || "";
-                    contextFile1.value = message.contextFiles?.[0] || "";
-                    contextFile2.value = message.contextFiles?.[1] || "";
-                    renderAdvancedSummary();
                     break;
                 case "state:empty":
                     showEmpty(message.message);
@@ -745,7 +997,6 @@
         });
 
         document.addEventListener("DOMContentLoaded", () => {
-            renderAdvancedSummary();
             vscode.postMessage({ type: "ready" });
         });
 
@@ -761,9 +1012,19 @@
         function renderCode(data) {
             latestCodeState = data;
             document.getElementById("code-file-path").textContent = data.filePath || "No file selected.";
+            document.getElementById("code-target-mode").classList.toggle(
+                "hidden",
+                data.targetSelectionMode !== "explicit",
+            );
             document.getElementById("code-status").textContent = data.message || "";
             const statusBadge = document.getElementById("code-status-badge");
             statusBadge.textContent = formatStatusLabel(data.status);
+            useActiveTargetButton.disabled = data.targetSelectionMode === "follow_active";
+            document.getElementById("explain-target-actions").classList.toggle(
+                "hidden",
+                !data.explainEntity.available,
+            );
+            useExplainTargetButton.disabled = !data.explainEntity.canUseAsTarget;
             const workingWarning = document.getElementById("working-warning");
             workingWarning.classList.toggle("hidden", data.status !== "error");
             lineageBadgeButton.classList.toggle(
@@ -773,7 +1034,12 @@
             document.getElementById("code-transcript").textContent = data.transcriptText || "";
             document.getElementById("code-model-output").textContent = data.modelOutputText || "";
             document.getElementById("code-draft").textContent = data.draftText || "";
-            renderAdvancedSummary();
+            renderAdvancedSummary(data);
+            renderSelectionList("context-files-list", "context-files-empty", data.contextFiles, "context");
+            renderSelectionList("editable-files-list", "editable-files-empty", data.editableFiles, "editable");
+            renderTargetPicker(data.targetPicker);
+            renderMultiPicker("context", data.contextPicker);
+            renderMultiPicker("editable", data.editablePicker);
             const applyHint = document.getElementById("code-apply-hint");
             applyHint.classList.toggle("hidden", !(data.status === "ready_to_apply" && data.draftText));
             const hasModelOutput = Boolean(data.modelOutputText);
@@ -870,6 +1136,8 @@
             document.getElementById("history-detail-intent").textContent = detail.intent || "";
             document.getElementById("history-detail-context").textContent =
                 detail.contextFiles.length > 0 ? detail.contextFiles.join("\n") : "<none>";
+            document.getElementById("history-detail-editable").textContent =
+                detail.editableFiles.length > 0 ? detail.editableFiles.join("\n") : "<none>";
             document.getElementById("history-detail-transcript").textContent =
                 detail.transcriptText || "<no steps>";
             document.getElementById("history-detail-model-output").textContent =
@@ -920,15 +1188,114 @@
             setTimeout(() => transientToggleSync.delete(panel), 0);
         }
 
-        function countFilledContextFiles() {
-            return [contextFile1.value, contextFile2.value].filter((value) => {
-                return Boolean(value && value.trim());
-            }).length;
+        function renderTargetPicker(picker) {
+            const panel = document.getElementById("target-picker-panel");
+            panel.classList.toggle("hidden", !picker.open);
+            targetPickerSearch.value = picker.search || "";
+            const empty = document.getElementById("target-picker-empty");
+            empty.classList.toggle("hidden", picker.candidates.length > 0);
+            const list = document.getElementById("target-picker-list");
+            list.replaceChildren();
+            picker.candidates.forEach((item) => {
+                const li = document.createElement("li");
+                li.className = "picker-item";
+
+                const label = document.createElement("label");
+                const radio = document.createElement("input");
+                radio.type = "radio";
+                radio.name = "target-picker";
+                radio.checked = item.selected;
+                radio.addEventListener("change", () => {
+                    vscode.postMessage({
+                        type: "setTargetPickerSelection",
+                        path: item.path,
+                    });
+                });
+
+                const pathText = document.createElement("span");
+                pathText.className = "selection-path muted";
+                pathText.textContent = item.path;
+
+                label.appendChild(radio);
+                label.appendChild(pathText);
+                li.appendChild(label);
+                list.appendChild(li);
+            });
+            targetPickerApplyButton.disabled = !picker.candidates.some((item) => item.selected);
         }
 
-        function renderAdvancedSummary() {
+        function renderMultiPicker(kind, picker) {
+            const panel = document.getElementById(`${kind}-picker-panel`);
+            const empty = document.getElementById(`${kind}-picker-empty`);
+            const list = document.getElementById(`${kind}-picker-list`);
+            const searchInput = document.getElementById(`${kind}-picker-search`);
+            const applyButton = document.getElementById(`${kind}-picker-apply`);
+            panel.classList.toggle("hidden", !picker.open);
+            searchInput.value = picker.search || "";
+            empty.classList.toggle("hidden", picker.candidates.length > 0);
+            list.replaceChildren();
+            picker.candidates.forEach((item) => {
+                const li = document.createElement("li");
+                li.className = "picker-item";
+
+                const label = document.createElement("label");
+                const checkbox = document.createElement("input");
+                checkbox.type = "checkbox";
+                checkbox.checked = item.selected;
+                checkbox.addEventListener("change", () => {
+                    vscode.postMessage({
+                        type: "toggleCodePickerSelection",
+                        kind,
+                        path: item.path,
+                        selected: checkbox.checked,
+                    });
+                });
+
+                const pathText = document.createElement("span");
+                pathText.className = "selection-path muted";
+                pathText.textContent = item.path;
+
+                label.appendChild(checkbox);
+                label.appendChild(pathText);
+                li.appendChild(label);
+                list.appendChild(li);
+            });
+            applyButton.disabled = false;
+        }
+
+        function renderSelectionList(listId, emptyId, items, kind) {
+            const empty = document.getElementById(emptyId);
+            empty.classList.toggle("hidden", items.length > 0);
+            const list = document.getElementById(listId);
+            list.replaceChildren();
+            items.forEach((item) => {
+                const li = document.createElement("li");
+                li.className = "selection-item";
+
+                const pathText = document.createElement("span");
+                pathText.className = "selection-path muted";
+                pathText.textContent = item;
+                li.appendChild(pathText);
+
+                const removeButton = document.createElement("button");
+                removeButton.type = "button";
+                removeButton.className = "action-button";
+                removeButton.textContent = "Remove";
+                removeButton.addEventListener("click", () => {
+                    vscode.postMessage({
+                        type: "removeSelectedFile",
+                        kind,
+                        path: item,
+                    });
+                });
+                li.appendChild(removeButton);
+                list.appendChild(li);
+            });
+        }
+
+        function renderAdvancedSummary(data) {
             document.getElementById("advanced-summary").textContent =
-                `Context (${countFilledContextFiles()}/2)`;
+                `Context (${data.contextFiles.length}/3) Editable (${data.editableFiles.length}/1)`;
         }
 
         function toPromptPreview(prompt) {
