@@ -14,6 +14,7 @@ import {
 } from "./onboarding";
 import { getFileLookupCandidates } from "./path-utils";
 import { CodingProfileManager } from "./profile-manager";
+import { ProfileStateStore } from "./profile-resolver";
 import { TailEventsSidebarProvider } from "./sidebar-provider";
 import type { BackendCodeEntity, ExplainCommandArgs } from "./types";
 
@@ -22,6 +23,8 @@ const COMMAND_ONBOARD_REPOSITORY = "tailEvents.onboardRepository";
 const COMMAND_OPEN_PANEL = "tailEvents.openPanel";
 const COMMAND_REFRESH_PANEL = "tailEvents.refreshPanel";
 const COMMAND_MANAGE_CODING_PROFILES = "tailEvents.manageCodingProfiles";
+const COMMAND_SELECT_CODE_PROFILE = "tailEvents.selectCodeProfile";
+const COMMAND_SELECT_EXPLAIN_PROFILE = "tailEvents.selectExplainProfile";
 const VIEW_CONTAINER_ID = "tailevents-sidebar";
 const VIEW_ID = "tailevents.sidebarView";
 const DEFAULT_BASE_URL = "http://127.0.0.1:8766/api/v1";
@@ -45,11 +48,15 @@ export function activate(context: vscode.ExtensionContext): void {
         (message) => outputChannel.appendLine(message),
     );
     const profileManager = new CodingProfileManager(context, apiClient);
-    void profileManager.syncToBackend();
+    const profileStateStore = new ProfileStateStore(apiClient);
+    void profileManager.syncToBackend().then(() => profileStateStore.refresh());
 
     const hoverProvider = new TailEventsHoverProvider({
         apiClient,
+        profileStateStore,
         getWorkspaceFolders: () => vscode.workspace.workspaceFolders,
+        getCodeProfilePreferenceId: () => profileManager.getCodeProfilePreferenceId(),
+        getExplainProfilePreferenceId: () => profileManager.getExplainProfilePreferenceId(),
         isHoverEnabled,
         vscodeApi: {
             Hover: vscode.Hover,
@@ -61,7 +68,9 @@ export function activate(context: vscode.ExtensionContext): void {
     const sidebarProvider = new TailEventsSidebarProvider({
         apiClient,
         getBaseUrl,
-        getSelectedProfileId: () => profileManager.getSelectedProfileId(),
+        profileStateStore,
+        getCodeProfilePreferenceId: () => profileManager.getCodeProfilePreferenceId(),
+        getExplainProfilePreferenceId: () => profileManager.getExplainProfilePreferenceId(),
         templatePath: path.join(context.extensionPath, "media", "sidebar.html"),
         runtime: {
             getActiveEditor: () => vscode.window.activeTextEditor ?? null,
@@ -156,6 +165,7 @@ export function activate(context: vscode.ExtensionContext): void {
                 }
                 return false;
             },
+            executeCommand: async (command) => vscode.commands.executeCommand(command),
         },
     });
 
@@ -238,6 +248,8 @@ export function activate(context: vscode.ExtensionContext): void {
                         },
                     });
                     apiClient.clearSummaryCache();
+                    await profileStateStore.refresh();
+                    await sidebarProvider.refreshAfterProfileChange({ reloadExplain: true });
                     const message = formatOnboardingSummary(summary);
                     if (summary.cancelled) {
                         vscode.window.showWarningMessage(message);
@@ -268,6 +280,19 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.commands.registerCommand(COMMAND_MANAGE_CODING_PROFILES, async () => {
             await profileManager.showManageProfilesQuickPick();
             await profileManager.syncToBackend();
+            apiClient.clearSummaryCache();
+            await profileStateStore.refresh();
+            await sidebarProvider.refreshAfterProfileChange({ reloadExplain: true });
+        }),
+        vscode.commands.registerCommand(COMMAND_SELECT_CODE_PROFILE, async () => {
+            await profileManager.showSelectCodeProfileQuickPick();
+            await profileStateStore.refresh();
+            await sidebarProvider.refreshAfterProfileChange({ reloadExplain: true });
+        }),
+        vscode.commands.registerCommand(COMMAND_SELECT_EXPLAIN_PROFILE, async () => {
+            await profileManager.showSelectExplainProfileQuickPick();
+            await profileStateStore.refresh();
+            await sidebarProvider.refreshAfterProfileChange({ reloadExplain: true });
         }),
     );
 

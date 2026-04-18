@@ -2,14 +2,15 @@
 
 TailEvents is a local-first backend plus VS Code extension for explaining Python code from coding-agent traces and supporting a history-first coding workspace.
 
-It records structured change events, maps them to code entities with AST indexing, and serves two explanation paths:
+It records structured change events, maps them to code entities with AST indexing, and serves:
 
 - fast summaries for hover
 - streamed detailed explanations for the sidebar
 - baseline-aware history provenance and structured caller/callee context
-- persistent coding-task history, replay preparation, multi-file verified drafts, and apply confirmation
+- persistent coding-task history, replay preparation, verified drafts, and apply confirmation
+- separate effective `Code` and `Explain` profile selection, with `Explain` following `Code` by default
 
-The repository only keeps the implemented product surface. Local plans, tests, progress logs, and private notes stay out of version control.
+The repository keeps the shipped product surface only. Local plans, tests, progress logs, and private notes stay out of version control.
 
 ## What It Does
 
@@ -24,9 +25,9 @@ The repository only keeps the implemented product surface. Local plans, tests, p
 - Supports baseline onboarding for existing Python files
 - Exposes a backend-orchestrated coding loop:
   `view -> edit -> verify -> Apply -> event`
-- Persists coding-task history with pagination, detail review, replay lineage, verified per-file drafts, and apply-event state
+- Persists coding-task history with pagination, filtering, target-path suggestions, detail review, replay lineage, verified per-file drafts, and apply-event state
 - Supports coding-profile sync from the extension plus backend environment fallback profiles
-- Exposes global coding capability discovery for repo observation and multi-file tasks
+- Exposes coding capability discovery for repo observation and multi-file tasks
 
 ## Runtime Shape
 
@@ -52,26 +53,34 @@ Coding Agent / Baseline Onboarding
   - init metadata and summary first
   - detailed explanation deltas progressively
   - final explanation on `done`
+- Sidebar and hover both use the effective `Explain` profile; `Explain` follows `Code` unless explicitly overridden
+- Explanation APIs accept `profile_id` and return `resolved_profile_id`
 - Sidebar shows a baseline/mixed disclaimer when explanation history is not fully traced
 - Sidebar renders `Who calls this` and `What this calls` from structured relation data
 
 ### Code
 
 - The extension starts a backend-orchestrated coding task from a workspace Python target, defaulting to the active file but allowing an explicit target plus up to 3 readonly context files and 1 additional editable file
-- The `Code` panel uses a prompt-first layout with compact target metadata, inline sidebar file pickers, and state-aware `Working` / `History` sections
+- The `Code` panel uses a prompt-first layout with compact target metadata, profile/capability cards, inline sidebar file pickers, and state-aware `Working` / `History` sections
 - Target control supports `Use Active File`, `Use Explain File as Target`, and `Back to Explain Entity` without leaving the sidebar workflow
 - The backend drives a constrained tool loop and returns verified drafts per file
 - Only a verified draft can be applied
 - Accepted drafts are written back through one workspace edit and then confirmed to the backend for event persistence
 - Task history supports:
   - paginated recent-task review
+  - status filters
+  - recent target-path suggestions plus exact target filtering
+  - incremental `Load More`
   - prompt-preview task cards plus summary-first detail review
-  - detail inspection for prompt, context, transcript, model output, verified draft, and apply status
+  - detail inspection for prompt, context, transcript, model output, verified draft, reasoning, and apply status
   - `Reuse Prompt/Context`
   - `Replay Task` preparation with lineage metadata
 - Replay-aware tasks surface a compact lineage badge and can jump back to the source task within the loaded history slice
 - Reuse keeps the current target while restoring prompt/context; replay restores target, context, editable files, and lineage metadata
-- Coding profiles can be managed from the extension through `TailEvents: Manage Coding Profiles` and synced to the backend
+- Profiles are managed from the extension through:
+  - `TailEvents: Manage Profiles`
+  - `TailEvents: Select Code Profile`
+  - `TailEvents: Select Explain Profile`
 
 ### Baseline
 
@@ -84,12 +93,14 @@ Coding Agent / Baseline Onboarding
 - `POST /api/v1/events`
 - `POST /api/v1/events/batch`
 - `GET /api/v1/entities/by-location`
+- `POST /api/v1/explain`
 - `GET /api/v1/explain/{entity_id}`
 - `GET /api/v1/explain/{entity_id}/summary`
 - `GET /api/v1/explain/{entity_id}/stream`
 - `GET /api/v1/events/for-entity/{entity_id}`
 - `POST /api/v1/coding/tasks`
 - `GET /api/v1/coding/tasks/history`
+- `GET /api/v1/coding/tasks/history/targets`
 - `GET /api/v1/coding/tasks/{task_id}`
 - `GET /api/v1/coding/tasks/{task_id}/stream`
 - `POST /api/v1/coding/tasks/{task_id}/applied`
@@ -144,11 +155,11 @@ For extension development, open the repo in VS Code and start the extension host
 ## Current Boundaries
 
 - Python is the only indexed language today
-- Profile management is command-driven today; richer in-sidebar profile and capability visibility is not shipped yet
-- Task history still lives in the same page, and richer pagination/presentation is not shipped yet
+- Profile definitions and selection are still command-driven; the sidebar shows effective state but does not provide an inline profile editor
+- History filtering and incremental loading are shipped in the same page; a richer standalone history presentation is still not shipped
 - `mcp` and `skills` are capability placeholders and currently report `not implemented in Phase 4`
 - Graph analysis is still a stub
-- Explanation requests still use the backend default profile; synced coding profiles do not change the explanation cache path
+- Repo-scale autonomous observation and broader multi-round task planning are not shipped yet
 
 ## License
 

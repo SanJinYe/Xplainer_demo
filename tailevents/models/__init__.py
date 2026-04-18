@@ -54,6 +54,7 @@ from tailevents.models.profile import (
     CodingProfilesSyncRequest,
     CodingProfileSyncItem,
     ProfileSource,
+    ResolvedCodingProfile,
 )
 from tailevents.models.relation import Relation
 from tailevents.models.task import (
@@ -67,6 +68,7 @@ from tailevents.models.task import (
     CodingTaskHistoryDetail,
     CodingTaskHistoryItem,
     CodingTaskHistoryListResponse,
+    CodingTaskHistoryTargetsResponse,
     CodingTaskHistoryStatus,
     CodingTaskRequestedCapability,
     CodingTaskRecord,
@@ -92,6 +94,7 @@ __all__ = [
     "CodingProfilesStatusResponse",
     "CodingProfilesSyncRequest",
     "CodingProfileSyncItem",
+    "ResolvedCodingProfile",
     "CodingTaskAppliedRequest",
     "CodingTaskCreateRequest",
     "CodingTaskCreateResponse",
@@ -100,6 +103,7 @@ __all__ = [
     "CodingTaskHistoryDetail",
     "CodingTaskHistoryItem",
     "CodingTaskHistoryListResponse",
+    "CodingTaskHistoryTargetsResponse",
     "CodingTaskHistoryStatus",
     "CodingTaskRequestedCapability",
     "CodingTaskRecord",

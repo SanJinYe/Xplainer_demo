@@ -1,8 +1,12 @@
 """Coding profile and capability models."""
 
-from typing import Literal, Optional
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal, Optional
 
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from tailevents.models.protocols import LLMClientProtocol
 
 
 ProfileSource = Literal["sync", "env_fallback"]
@@ -45,6 +49,17 @@ class CodingProfilesStatusResponse(BaseModel):
     profiles: list[CodingProfileStatusItem] = Field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class ResolvedCodingProfile:
+    """Resolved runtime profile used for profile-aware backend requests."""
+
+    resolved_profile_id: str
+    backend: str
+    model: str
+    source: ProfileSource
+    llm_client: "LLMClientProtocol"
+
+
 class CodingCapabilityState(BaseModel):
     """One capability flag exposed by the backend."""
 
@@ -69,4 +84,5 @@ __all__ = [
     "CodingProfilesSyncRequest",
     "CodingProfileSyncItem",
     "ProfileSource",
+    "ResolvedCodingProfile",
 ]

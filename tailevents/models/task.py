@@ -130,6 +130,12 @@ class CodingTaskHistoryListResponse(BaseModel):
     has_more: bool
 
 
+class CodingTaskHistoryTargetsResponse(BaseModel):
+    """Deduped target path suggestions for history filters."""
+
+    items: list[str] = Field(default_factory=list)
+
+
 class CodingTaskEdit(BaseModel):
     """A local exact-match replacement used inside the backend loop."""
 
@@ -247,6 +253,7 @@ __all__ = [
     "CodingTaskHistoryDetail",
     "CodingTaskHistoryItem",
     "CodingTaskHistoryListResponse",
+    "CodingTaskHistoryTargetsResponse",
     "CodingTaskHistoryStatus",
     "CodingTaskRequestedCapability",
     "CodingTaskRecord",

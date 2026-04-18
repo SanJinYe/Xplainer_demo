@@ -239,13 +239,15 @@ def build_lifespan(
         )
         active_llm_client = llm_client or LLMClientFactory.create(app_settings)
         active_doc_retriever = doc_retriever or DocRetriever()
+        profile_registry = InMemoryCodingProfileRegistry(app_settings)
         explanation_engine = ExplanationEngine(
             entity_db=entity_db,
             event_store=event_store,
             relation_store=relation_store,
             cache=cache,
-            llm_client=active_llm_client,
             doc_retriever=active_doc_retriever,
+            profile_registry=profile_registry,
+            llm_client=active_llm_client,
             max_events=app_settings.explanation_max_events,
             temperature=app_settings.explanation_temperature,
             cache_ttl=app_settings.cache_default_ttl,
@@ -268,7 +270,6 @@ def build_lifespan(
             indexer=indexer,
             hooks=[GraphUpdateHook(graph_service)],
         )
-        profile_registry = InMemoryCodingProfileRegistry(app_settings)
         baseline_service = BaselineOnboardingService(
             event_store=event_store,
             ingestion_pipeline=ingestion_pipeline,

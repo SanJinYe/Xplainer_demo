@@ -20,6 +20,7 @@ from tailevents.models.task import (
     CodingTaskCreateResponse,
     CodingTaskHistoryDetail,
     CodingTaskHistoryListResponse,
+    CodingTaskHistoryTargetsResponse,
     CodingTaskToolResultRequest,
 )
 
@@ -53,6 +54,18 @@ async def list_coding_task_history(
         offset=normalized_offset,
         status=task_status,
         target_file_path=target_file_path,
+    )
+
+
+@router.get("/history/targets", response_model=CodingTaskHistoryTargetsResponse)
+async def list_coding_task_history_targets(
+    query: Optional[str] = None,
+    limit: int = 20,
+    service: CodingTaskService = Depends(get_coding_task_service),
+) -> CodingTaskHistoryTargetsResponse:
+    return await service.list_history_target_paths(
+        query=query,
+        limit=max(1, min(limit, 50)),
     )
 
 

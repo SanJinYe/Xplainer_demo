@@ -32,6 +32,7 @@ class QueryRouter:
                 entity_ids=entity_ids,
                 detail_level=request.detail_level,
                 include_relations=request.include_relations,
+                profile_id=request.profile_id,
             )
 
         return ExplanationResponse(

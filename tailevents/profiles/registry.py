@@ -13,6 +13,7 @@ from tailevents.models.profile import (
     CodingProfilesStatusResponse,
     CodingProfilesSyncRequest,
     CodingProfileSyncItem,
+    ResolvedCodingProfile,
 )
 from tailevents.models.protocols import CodingProfileRegistryProtocol, LLMClientProtocol
 
@@ -79,10 +80,19 @@ class InMemoryCodingProfileRegistry(CodingProfileRegistryProtocol):
             ),
         )
 
-    def get_llm_client(self, profile_id: Optional[str] = None) -> LLMClientProtocol:
+    def resolve_profile(self, profile_id: Optional[str] = None) -> ResolvedCodingProfile:
         resolved = self._resolve_profile(profile_id)
         settings_like = self._build_settings_like(resolved)
-        return LLMClientFactory.create(settings_like)
+        return ResolvedCodingProfile(
+            resolved_profile_id=resolved.profile_id,
+            backend=resolved.backend,
+            model=resolved.model,
+            source=resolved.source,
+            llm_client=LLMClientFactory.create(settings_like),
+        )
+
+    def get_llm_client(self, profile_id: Optional[str] = None) -> LLMClientProtocol:
+        return self.resolve_profile(profile_id).llm_client
 
     def _resolve_profile(self, profile_id: Optional[str]) -> _ResolvedProfile:
         if profile_id:

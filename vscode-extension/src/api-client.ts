@@ -9,6 +9,7 @@ import {
     type BackendCodingTaskHistoryDetail,
     type BackendCodingTaskHistoryItem,
     type BackendCodingTaskHistoryPage,
+    type BackendCodingTaskHistoryTargetsResponse,
     type BackendEntityExplanation,
     type BackendExplanationStreamDone,
     type BackendExplanationStreamInit,
@@ -63,16 +64,19 @@ export interface TailEventsApi {
     ): Promise<ApiResult<BackendCodeEntity>>;
     getExplanationSummary(
         entityId: string,
+        profileId?: string | null,
         signal?: AbortSignal,
     ): Promise<ApiResult<BackendEntityExplanation>>;
     getExplanationFull(
         entityId: string,
+        profileId?: string | null,
         signal?: AbortSignal,
     ): Promise<ApiResult<BackendEntityExplanation>>;
     streamExplanation(
         entityId: string,
         handlers: ExplanationStreamHandlers,
         signal?: AbortSignal,
+        profileId?: string | null,
     ): Promise<ApiResult<null>>;
     getEntityEvents(
         entityId: string,
@@ -103,6 +107,13 @@ export interface TailEventsApi {
         taskId: string,
         signal?: AbortSignal,
     ): Promise<ApiResult<BackendCodingTaskHistoryDetail>>;
+    getCodingTaskHistoryTargets?(
+        options?: {
+            query?: string;
+            limit?: number;
+        },
+        signal?: AbortSignal,
+    ): Promise<ApiResult<BackendCodingTaskHistoryTargetsResponse>>;
     submitCodingToolResult(
         taskId: string,
         payload: CodingTaskToolResultPayload,
@@ -190,31 +201,40 @@ export class TailEventsApiClient implements TailEventsApi {
 
     public async getExplanationSummary(
         entityId: string,
+        profileId?: string | null,
         signal?: AbortSignal,
     ): Promise<ApiResult<BackendEntityExplanation>> {
-        const cached = this.getCached(this.summaryCache, entityId);
+        const cacheKey = this.buildSummaryCacheKey(entityId, profileId ?? null);
+        const cached = this.getCached(this.summaryCache, cacheKey);
         if (cached) {
             return success(cached, 200);
         }
 
         const result = await this.requestJson<BackendEntityExplanation>(
             `/explain/${encodeURIComponent(entityId)}/summary`,
-            undefined,
+            profileId ? { profile_id: profileId } : undefined,
             signal,
         );
         if (result.ok) {
-            this.setCached(this.summaryCache, entityId, result.data);
+            const resolvedProfileId =
+                result.data.resolved_profile_id ?? profileId ?? "__default__";
+            this.setCached(
+                this.summaryCache,
+                this.buildSummaryCacheKey(entityId, resolvedProfileId),
+                result.data,
+            );
         }
         return result;
     }
 
     public async getExplanationFull(
         entityId: string,
+        profileId?: string | null,
         signal?: AbortSignal,
     ): Promise<ApiResult<BackendEntityExplanation>> {
         return this.requestJson<BackendEntityExplanation>(
             `/explain/${encodeURIComponent(entityId)}`,
-            undefined,
+            profileId ? { profile_id: profileId } : undefined,
             signal,
         );
     }
@@ -223,10 +243,11 @@ export class TailEventsApiClient implements TailEventsApi {
         entityId: string,
         handlers: ExplanationStreamHandlers,
         signal?: AbortSignal,
+        profileId?: string | null,
     ): Promise<ApiResult<null>> {
         const url = this.buildUrl(
             `/explain/${encodeURIComponent(entityId)}/stream`,
-            undefined,
+            profileId ? { profile_id: profileId } : undefined,
         );
         const { signal: mergedSignal, cleanup } = this.buildMergedSignal(signal, false);
 
@@ -373,6 +394,26 @@ export class TailEventsApiClient implements TailEventsApi {
         );
     }
 
+    public async getCodingTaskHistoryTargets(
+        options?: {
+            query?: string;
+            limit?: number;
+        },
+        signal?: AbortSignal,
+    ): Promise<ApiResult<BackendCodingTaskHistoryTargetsResponse>> {
+        const query: Record<string, string> = {
+            limit: String(options?.limit ?? 20),
+        };
+        if (options?.query) {
+            query.query = options.query;
+        }
+        return this.requestJson<BackendCodingTaskHistoryTargetsResponse>(
+            "/coding/tasks/history/targets",
+            query,
+            signal,
+        );
+    }
+
     public async cancelCodingTask(
         taskId: string,
         signal?: AbortSignal,
@@ -505,6 +546,10 @@ export class TailEventsApiClient implements TailEventsApi {
 
     public clearSummaryCache(): void {
         this.summaryCache.clear();
+    }
+
+    private buildSummaryCacheKey(entityId: string, profileId: string | null): string {
+        return `${entityId}::${profileId ?? "__default__"}`;
     }
 
     private async consumeCodingTaskStream(

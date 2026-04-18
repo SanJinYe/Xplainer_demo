@@ -17,7 +17,9 @@
     "onCommand:tailEvents.onboardRepository",
     "onCommand:tailEvents.openPanel",
     "onCommand:tailEvents.refreshPanel",
-    "onCommand:tailEvents.manageCodingProfiles"
+    "onCommand:tailEvents.manageCodingProfiles",
+    "onCommand:tailEvents.selectCodeProfile",
+    "onCommand:tailEvents.selectExplainProfile"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -40,7 +42,15 @@
       },
       {
         "command": "tailEvents.manageCodingProfiles",
-        "title": "TailEvents: Manage Coding Profiles"
+        "title": "TailEvents: Manage Profiles"
+      },
+      {
+        "command": "tailEvents.selectCodeProfile",
+        "title": "TailEvents: Select Code Profile"
+      },
+      {
+        "command": "tailEvents.selectExplainProfile",
+        "title": "TailEvents: Select Explain Profile"
       }
     ],
     "configuration": {

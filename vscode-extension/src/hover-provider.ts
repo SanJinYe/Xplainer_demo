@@ -3,6 +3,11 @@ import type * as vscode from "vscode";
 import type { TailEventsApi } from "./api-client";
 import { findEntityByLocation } from "./location-lookup";
 import { getFileLookupCandidates } from "./path-utils";
+import {
+    ProfileStateStore,
+    resolveCodeEffectiveProfile,
+    resolveExplainEffectiveProfile,
+} from "./profile-resolver";
 import type {
     ApiResult,
     BackendCodeEntity,
@@ -19,7 +24,10 @@ interface HoverRuntime {
 
 interface HoverProviderOptions {
     apiClient: TailEventsApi;
+    profileStateStore?: ProfileStateStore;
     getWorkspaceFolders: () => readonly vscode.WorkspaceFolder[] | undefined;
+    getCodeProfilePreferenceId?: () => string | null;
+    getExplainProfilePreferenceId?: () => string | null;
     isHoverEnabled: () => boolean;
     vscodeApi: HoverRuntime;
     commandId?: string;
@@ -32,13 +40,22 @@ export class TailEventsHoverProvider implements vscode.HoverProvider {
 
     private readonly apiClient: TailEventsApi;
 
+    private readonly profileStateStore: ProfileStateStore;
+
     private readonly getWorkspaceFolders: () => readonly vscode.WorkspaceFolder[] | undefined;
+
+    private readonly getCodeProfilePreferenceId: () => string | null;
+
+    private readonly getExplainProfilePreferenceId: () => string | null;
 
     private readonly isHoverEnabled: () => boolean;
 
     public constructor(options: HoverProviderOptions) {
         this.apiClient = options.apiClient;
+        this.profileStateStore = options.profileStateStore ?? new ProfileStateStore(options.apiClient);
         this.getWorkspaceFolders = options.getWorkspaceFolders;
+        this.getCodeProfilePreferenceId = options.getCodeProfilePreferenceId ?? (() => null);
+        this.getExplainProfilePreferenceId = options.getExplainProfilePreferenceId ?? (() => null);
         this.isHoverEnabled = options.isHoverEnabled;
         this.vscodeApi = options.vscodeApi;
         this.commandId = options.commandId ?? DEFAULT_COMMAND_ID;
@@ -81,8 +98,23 @@ export class TailEventsHoverProvider implements vscode.HoverProvider {
             return null;
         }
 
+        await this.profileStateStore.ensureLoaded(abortSignal);
+        const codeProfile = resolveCodeEffectiveProfile(
+            this.profileStateStore.getProfiles(),
+            this.getCodeProfilePreferenceId(),
+        );
+        const explainProfile = resolveExplainEffectiveProfile(
+            this.profileStateStore.getProfiles(),
+            codeProfile,
+            this.getExplainProfilePreferenceId(),
+        );
+        if (!explainProfile.available) {
+            return null;
+        }
+
         const summaryResult = await this.apiClient.getExplanationSummary(
             lookup.result.data.entity_id,
+            explainProfile.resolvedProfileId ?? undefined,
             abortSignal,
         );
         if (token.isCancellationRequested) {

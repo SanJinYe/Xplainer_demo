@@ -62,6 +62,7 @@ class ExplanationRequest(BaseModel):
     cursor_word: Optional[str] = None
     detail_level: str = "summary"
     include_relations: bool = False
+    profile_id: Optional[str] = None
 
 
 class EntityExplanation(BaseModel):
@@ -72,6 +73,7 @@ class EntityExplanation(BaseModel):
     qualified_name: str
     entity_type: EntityType
     signature: Optional[str] = None
+    resolved_profile_id: Optional[str] = None
 
     summary: str
     detailed_explanation: Optional[str] = None
@@ -108,6 +110,7 @@ class ExplanationStreamInit(BaseModel):
     qualified_name: str
     entity_type: EntityType
     signature: Optional[str] = None
+    resolved_profile_id: Optional[str] = None
     file_path: str
     line_range: Optional[tuple[int, int]] = None
     event_count: int = 0

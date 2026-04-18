@@ -1,9 +1,9 @@
 """Explanation-related API routes."""
 
 import json
-from typing import AsyncIterator
+from typing import AsyncIterator, Optional
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from tailevents.api.dependencies import (
@@ -28,37 +28,57 @@ async def explain(
     request: ExplanationRequest,
     query_router: QueryRouter = Depends(get_query_router),
 ) -> ExplanationResponse:
-    return await query_router.route(request)
+    try:
+        return await query_router.route(request)
+    except EntityExplanationNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
 @router.get("/{entity_id}/summary", response_model=EntityExplanation)
 async def explain_summary(
     entity_id: str,
+    profile_id: Optional[str] = None,
     explanation_engine: ExplanationEngine = Depends(get_explanation_engine),
 ) -> EntityExplanation:
-    return await explanation_engine.explain_entity(
-        entity_id=entity_id,
-        detail_level="summary",
-        include_relations=False,
-    )
+    try:
+        return await explanation_engine.explain_entity(
+            entity_id=entity_id,
+            detail_level="summary",
+            include_relations=False,
+            profile_id=profile_id,
+        )
+    except EntityExplanationNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
 @router.get("/{entity_id}", response_model=EntityExplanation)
 async def explain_entity(
     entity_id: str,
+    profile_id: Optional[str] = None,
     explanation_engine: ExplanationEngine = Depends(get_explanation_engine),
 ) -> EntityExplanation:
-    return await explanation_engine.explain_entity(
-        entity_id=entity_id,
-        detail_level="detailed",
-        include_relations=True,
-    )
+    try:
+        return await explanation_engine.explain_entity(
+            entity_id=entity_id,
+            detail_level="detailed",
+            include_relations=True,
+            profile_id=profile_id,
+        )
+    except EntityExplanationNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
 @router.get("/{entity_id}/stream")
 async def explain_entity_stream(
     entity_id: str,
     request: Request,
+    profile_id: Optional[str] = None,
     explanation_engine: ExplanationEngine = Depends(get_explanation_engine),
 ) -> StreamingResponse:
     async def event_stream() -> AsyncIterator[str]:
@@ -66,11 +86,14 @@ async def explain_entity_stream(
             async for event in explanation_engine.stream_explain_entity(
                 entity_id=entity_id,
                 include_relations=True,
+                profile_id=profile_id,
             ):
                 if await request.is_disconnected():
                     break
                 yield _format_sse(event.event, event.model_dump(mode="json"))
         except EntityExplanationNotFoundError as error:
+            yield _format_sse("error", {"message": str(error)})
+        except ValueError as error:
             yield _format_sse("error", {"message": str(error)})
         except Exception as error:  # noqa: BLE001
             yield _format_sse("error", {"message": str(error)})

@@ -25,6 +25,14 @@ export type CodingTaskRequestedCapability =
     | "multi_file"
     | "mcp"
     | "skills";
+export type HistoryFilterStatus =
+    | "all"
+    | "ready_to_apply"
+    | "applied"
+    | "failed"
+    | "cancelled"
+    | "applied_event_pending"
+    | "applied_without_events";
 export type CodeTaskStatus =
     | "idle"
     | "running"
@@ -220,6 +228,10 @@ export interface BackendCodingTaskHistoryPage {
     has_more: boolean;
 }
 
+export interface BackendCodingTaskHistoryTargetsResponse {
+    items: string[];
+}
+
 export interface BackendCodingTaskHistoryDetail {
     task_id: string;
     target_file_path: string;
@@ -351,6 +363,7 @@ export interface BackendEntityExplanation {
     qualified_name: string;
     entity_type: string;
     signature?: string | null;
+    resolved_profile_id?: string | null;
     summary: string;
     detailed_explanation?: string | null;
     param_explanations?: Record<string, string> | null;
@@ -374,6 +387,7 @@ export interface BackendExplanationStreamInit {
     qualified_name: string;
     entity_type: string;
     signature?: string | null;
+    resolved_profile_id?: string | null;
     file_path: string;
     line_range?: LineRange | null;
     event_count: number;
@@ -455,6 +469,7 @@ export interface SidebarViewModel {
     callers: RelatedEntityViewModel[];
     callees: RelatedEntityViewModel[];
     relatedEntities: RelatedEntityViewModel[];
+    profile: EffectiveProfileViewModel | null;
 }
 
 export interface CodingTaskHistoryItemViewModel {
@@ -509,6 +524,46 @@ export interface CodeExplainEntityViewModel {
     canUseAsTarget: boolean;
 }
 
+export interface EffectiveProfileViewModel {
+    preferenceId: string | null;
+    resolvedProfileId: string | null;
+    label: string;
+    backend: string | null;
+    model: string | null;
+    source: "sync" | "env_fallback" | null;
+    followsCode: boolean;
+    available: boolean;
+    selectable: boolean;
+    reason: string | null;
+}
+
+export interface CapabilityBadgeViewModel {
+    key: CodingTaskRequestedCapability;
+    available: boolean;
+    reason?: string | null;
+}
+
+export interface CapabilitySummaryViewModel {
+    available: CapabilityBadgeViewModel[];
+    unavailableCount: number;
+}
+
+export interface CodeHistoryFiltersViewModel {
+    status: HistoryFilterStatus;
+    targetFilePath: string | null;
+    targetQuery: string;
+    targetSuggestions: string[];
+    targetSuggestionsLoading: boolean;
+}
+
+export interface CodeHistoryPageViewModel {
+    total: number;
+    filteredCount: number;
+    limit: number;
+    offset: number;
+    hasMore: boolean;
+}
+
 export interface CodeViewModel {
     filePath: string | null;
     targetSelectionMode: TargetSelectionMode;
@@ -528,9 +583,14 @@ export interface CodeViewModel {
     canRun: boolean;
     canCancel: boolean;
     canApply: boolean;
+    codeProfile: EffectiveProfileViewModel;
+    explainProfile: EffectiveProfileViewModel;
+    capabilitySummary: CapabilitySummaryViewModel;
     historyLoading: boolean;
     historyError: string | null;
     historyNotice: string | null;
+    historyPage: CodeHistoryPageViewModel;
+    historyFilters: CodeHistoryFiltersViewModel;
     historyItems: CodingTaskHistoryItemViewModel[];
     historyDetail: CodingTaskHistoryDetailViewModel | null;
 }
@@ -678,6 +738,33 @@ export interface SidebarReplayHistoryTaskMessage {
     taskId: string;
 }
 
+export interface SidebarSelectCodeProfileMessage {
+    type: "selectCodeProfile";
+}
+
+export interface SidebarSelectExplainProfileMessage {
+    type: "selectExplainProfile";
+}
+
+export interface SidebarSetHistoryStatusFilterMessage {
+    type: "setHistoryStatusFilter";
+    status: HistoryFilterStatus;
+}
+
+export interface SidebarSetHistoryTargetQueryMessage {
+    type: "setHistoryTargetQuery";
+    query: string;
+}
+
+export interface SidebarSetHistoryTargetSelectionMessage {
+    type: "setHistoryTargetSelection";
+    targetFilePath: string | null;
+}
+
+export interface SidebarLoadMoreHistoryMessage {
+    type: "loadMoreHistory";
+}
+
 export type SidebarMessageFromWebview =
     | SidebarReadyMessage
     | SidebarRefreshMessage
@@ -698,4 +785,10 @@ export type SidebarMessageFromWebview =
     | SidebarApplyTaskMessage
     | SidebarSelectHistoryTaskMessage
     | SidebarReuseHistoryTaskMessage
-    | SidebarReplayHistoryTaskMessage;
+    | SidebarReplayHistoryTaskMessage
+    | SidebarSelectCodeProfileMessage
+    | SidebarSelectExplainProfileMessage
+    | SidebarSetHistoryStatusFilterMessage
+    | SidebarSetHistoryTargetQueryMessage
+    | SidebarSetHistoryTargetSelectionMessage
+    | SidebarLoadMoreHistoryMessage;

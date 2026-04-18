@@ -96,7 +96,8 @@
         ul,
         pre,
         textarea,
-        input {
+        input,
+        select {
             margin: 0;
         }
 
@@ -196,7 +197,8 @@
 
         textarea,
         pre,
-        input {
+        input,
+        select {
             width: 100%;
             border: 1px solid var(--vscode-input-border, var(--vscode-list-hoverBackground));
             border-radius: 6px;
@@ -218,7 +220,8 @@
             overflow-x: auto;
         }
 
-        input {
+        input,
+        select {
             min-height: 38px;
         }
 
@@ -424,6 +427,44 @@
             gap: 8px;
             justify-content: flex-end;
         }
+
+        .profile-strip {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 10px;
+        }
+
+        .profile-card {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            padding: 10px;
+            border: 1px solid var(--vscode-list-hoverBackground);
+            border-radius: 8px;
+        }
+
+        .profile-title {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+
+        .compact-button {
+            padding: 4px 8px;
+        }
+
+        .filter-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 8px;
+        }
+
+        .chip-row {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
     </style>
 </head>
 <body>
@@ -456,6 +497,7 @@
                     <p id="entity-location" class="muted"></p>
                     <p id="entity-signature" class="text-block hidden"></p>
                     <p id="event-count" class="muted"></p>
+                    <p id="explain-profile" class="muted hidden"></p>
                 </header>
 
                 <section class="section">
@@ -534,6 +576,35 @@
                     </div>
                 </div>
                 <p id="code-status" class="muted"></p>
+                <div class="profile-strip">
+                    <div class="profile-card">
+                        <div class="profile-title">
+                            <p class="eyebrow muted">Code Profile</p>
+                            <button id="select-code-profile-button" class="action-button compact-button" type="button">
+                                Select
+                            </button>
+                        </div>
+                        <p id="code-profile-label"></p>
+                        <p id="code-profile-meta" class="muted"></p>
+                        <p id="code-profile-reason" class="muted hidden"></p>
+                    </div>
+                    <div class="profile-card">
+                        <div class="profile-title">
+                            <p class="eyebrow muted">Explain Profile</p>
+                            <button id="select-explain-profile-button" class="action-button compact-button" type="button">
+                                Select
+                            </button>
+                        </div>
+                        <p id="explain-profile-label"></p>
+                        <p id="explain-profile-meta" class="muted"></p>
+                        <p id="explain-profile-reason" class="muted hidden"></p>
+                    </div>
+                    <div class="profile-card">
+                        <p class="eyebrow muted">Capabilities</p>
+                        <div id="capability-list" class="chip-row"></div>
+                        <p id="capability-unavailable" class="muted hidden"></p>
+                    </div>
+                </div>
             </section>
 
             <section class="panel-box">
@@ -650,11 +721,42 @@
                     <span id="history-summary" class="summary-hint muted">Recent Tasks</span>
                 </summary>
                 <div class="collapsible-body">
+                    <div class="filter-grid">
+                        <label>
+                            <span class="muted">Status</span>
+                            <select id="history-status-filter">
+                                <option value="all">All</option>
+                                <option value="ready_to_apply">Ready to apply</option>
+                                <option value="applied">Applied</option>
+                                <option value="failed">Failed</option>
+                                <option value="cancelled">Cancelled</option>
+                                <option value="applied_event_pending">Applied event pending</option>
+                                <option value="applied_without_events">Applied without events</option>
+                            </select>
+                        </label>
+                        <label>
+                            <span class="muted">Target File</span>
+                            <input
+                                id="history-target-filter"
+                                list="history-target-suggestions"
+                                placeholder="Type to search recent target paths"
+                            />
+                            <datalist id="history-target-suggestions"></datalist>
+                        </label>
+                        <div class="row">
+                            <button id="history-clear-target-filter" class="action-button" type="button">
+                                Clear Target Filter
+                            </button>
+                        </div>
+                    </div>
                     <p id="history-loading" class="muted hidden">Loading recent tasks...</p>
                     <p id="history-error" class="muted hidden"></p>
                     <p id="history-notice" class="muted inline-notice hidden"></p>
                     <p id="history-empty" class="muted hidden">No tasks yet.</p>
                     <ul id="history-list" class="related-list"></ul>
+                    <button id="history-load-more" class="action-button hidden" type="button">
+                        Load More
+                    </button>
 
                     <div class="summary-block">
                         <div class="row">
@@ -758,6 +860,8 @@
         const editablePickerCancelButton = document.getElementById("editable-picker-cancel");
         const reuseHistoryButton = document.getElementById("reuse-history-button");
         const replayHistoryButton = document.getElementById("replay-history-button");
+        const selectCodeProfileButton = document.getElementById("select-code-profile-button");
+        const selectExplainProfileButton = document.getElementById("select-explain-profile-button");
         const lineageBadgeButton = document.getElementById("code-lineage-badge");
         const advancedPanel = document.getElementById("advanced-panel");
         const workingPanel = document.getElementById("working-panel");
@@ -765,8 +869,14 @@
         const technicalPanel = document.getElementById("technical-panel");
         const historyPanel = document.getElementById("history-panel");
         const historyDetailTechnicalPanel = document.getElementById("history-detail-technical-panel");
+        const historyStatusFilter = document.getElementById("history-status-filter");
+        const historyTargetFilter = document.getElementById("history-target-filter");
+        const historyTargetSuggestions = document.getElementById("history-target-suggestions");
+        const historyClearTargetFilter = document.getElementById("history-clear-target-filter");
+        const historyLoadMoreButton = document.getElementById("history-load-more");
 
         let currentMode = "explain";
+        let historyTargetDebounce = null;
         let latestCodeState = {
             filePath: null,
             targetSelectionMode: "follow_active",
@@ -788,6 +898,48 @@
             canRun: false,
             canCancel: false,
             canApply: false,
+            codeProfile: {
+                preferenceId: null,
+                resolvedProfileId: null,
+                label: "No available profile",
+                backend: null,
+                model: null,
+                source: null,
+                followsCode: false,
+                available: false,
+                selectable: false,
+                reason: null,
+            },
+            explainProfile: {
+                preferenceId: null,
+                resolvedProfileId: null,
+                label: "No available profile",
+                backend: null,
+                model: null,
+                source: null,
+                followsCode: true,
+                available: false,
+                selectable: false,
+                reason: null,
+            },
+            capabilitySummary: {
+                available: [],
+                unavailableCount: 0,
+            },
+            historyPage: {
+                total: 0,
+                filteredCount: 0,
+                limit: 20,
+                offset: 0,
+                hasMore: false,
+            },
+            historyFilters: {
+                status: "all",
+                targetFilePath: null,
+                targetQuery: "",
+                targetSuggestions: [],
+                targetSuggestionsLoading: false,
+            },
             historyItems: [],
             historyDetail: null,
         };
@@ -930,6 +1082,54 @@
             });
         });
 
+        selectCodeProfileButton.addEventListener("click", () => {
+            vscode.postMessage({ type: "selectCodeProfile" });
+        });
+
+        selectExplainProfileButton.addEventListener("click", () => {
+            vscode.postMessage({ type: "selectExplainProfile" });
+        });
+
+        historyStatusFilter.addEventListener("change", () => {
+            vscode.postMessage({
+                type: "setHistoryStatusFilter",
+                status: historyStatusFilter.value,
+            });
+        });
+
+        historyTargetFilter.addEventListener("input", () => {
+            if (historyTargetDebounce) {
+                clearTimeout(historyTargetDebounce);
+            }
+            historyTargetDebounce = setTimeout(() => {
+                vscode.postMessage({
+                    type: "setHistoryTargetQuery",
+                    query: historyTargetFilter.value,
+                });
+            }, 300);
+        });
+
+        historyTargetFilter.addEventListener("change", () => {
+            const value = historyTargetFilter.value.trim();
+            const suggestions = latestCodeState.historyFilters.targetSuggestions || [];
+            if (!value) {
+                vscode.postMessage({ type: "setHistoryTargetSelection", targetFilePath: null });
+                return;
+            }
+            if (suggestions.includes(value)) {
+                vscode.postMessage({ type: "setHistoryTargetSelection", targetFilePath: value });
+            }
+        });
+
+        historyClearTargetFilter.addEventListener("click", () => {
+            historyTargetFilter.value = "";
+            vscode.postMessage({ type: "setHistoryTargetSelection", targetFilePath: null });
+        });
+
+        historyLoadMoreButton.addEventListener("click", () => {
+            vscode.postMessage({ type: "loadMoreHistory" });
+        });
+
         lineageBadgeButton.addEventListener("click", () => {
             if (latestCodeState.launchMode === "new" || !latestCodeState.sourceTaskId) {
                 return;
@@ -1034,6 +1234,7 @@
             document.getElementById("code-transcript").textContent = data.transcriptText || "";
             document.getElementById("code-model-output").textContent = data.modelOutputText || "";
             document.getElementById("code-draft").textContent = data.draftText || "";
+            renderProfileStrip(data);
             renderAdvancedSummary(data);
             renderSelectionList("context-files-list", "context-files-empty", data.contextFiles, "context");
             renderSelectionList("editable-files-list", "editable-files-empty", data.editableFiles, "editable");
@@ -1064,6 +1265,8 @@
             runButton.disabled = !data.canRun;
             cancelButton.disabled = !data.canCancel;
             applyButton.disabled = !data.canApply;
+            reuseHistoryButton.title = "Keep the current target and restore prompt, context, code profile, and capabilities.";
+            replayHistoryButton.title = "Restore target, context, editable files, code profile, and capabilities, then keep lineage.";
             applyStateAwarePanels(data.status);
             renderHistory(data);
         }
@@ -1075,7 +1278,20 @@
             const empty = document.getElementById("history-empty");
             const list = document.getElementById("history-list");
             document.getElementById("history-summary").textContent =
-                data.historyItems.length > 0 ? `${data.historyItems.length} task(s)` : "Recent Tasks";
+                data.historyPage.total > 0
+                    ? `${data.historyPage.filteredCount} / ${data.historyPage.total} task(s)`
+                    : "Recent Tasks";
+            historyStatusFilter.value = data.historyFilters.status;
+            historyTargetFilter.value = data.historyFilters.targetFilePath || data.historyFilters.targetQuery || "";
+            historyTargetSuggestions.replaceChildren();
+            (data.historyFilters.targetSuggestions || []).forEach((item) => {
+                const option = document.createElement("option");
+                option.value = item;
+                historyTargetSuggestions.appendChild(option);
+            });
+            historyTargetFilter.placeholder = data.historyFilters.targetSuggestionsLoading
+                ? "Loading target suggestions..."
+                : "Type to search recent target paths";
 
             loading.classList.toggle("hidden", !data.historyLoading);
             error.textContent = data.historyError || "";
@@ -1087,6 +1303,8 @@
                 "hidden",
                 data.historyLoading || Boolean(data.historyError) || data.historyItems.length > 0,
             );
+            historyLoadMoreButton.classList.toggle("hidden", !data.historyPage.hasMore);
+            historyLoadMoreButton.disabled = data.historyLoading;
 
             list.replaceChildren();
             data.historyItems.forEach((item) => {
@@ -1161,6 +1379,36 @@
             errorBlock.classList.toggle("hidden", !detail.lastError);
             document.getElementById("history-detail-last-error").textContent =
                 detail.lastError || "";
+        }
+
+        function renderProfileStrip(data) {
+            renderProfileCard("code", data.codeProfile);
+            renderProfileCard("explain", data.explainProfile);
+            const capabilityList = document.getElementById("capability-list");
+            capabilityList.replaceChildren();
+            (data.capabilitySummary.available || []).forEach((item) => {
+                const badge = document.createElement("span");
+                badge.className = "badge";
+                badge.textContent = item.key.replaceAll("_", " ");
+                if (item.reason) {
+                    badge.title = item.reason;
+                }
+                capabilityList.appendChild(badge);
+            });
+            const unavailable = document.getElementById("capability-unavailable");
+            unavailable.textContent =
+                data.capabilitySummary.unavailableCount > 0
+                    ? `${data.capabilitySummary.unavailableCount} unavailable`
+                    : "";
+            unavailable.classList.toggle("hidden", data.capabilitySummary.unavailableCount === 0);
+        }
+
+        function renderProfileCard(prefix, profile) {
+            document.getElementById(`${prefix}-profile-label`).textContent = profile.label;
+            document.getElementById(`${prefix}-profile-meta`).textContent = formatProfileSummary(profile);
+            const reason = document.getElementById(`${prefix}-profile-reason`);
+            reason.textContent = profile.reason || "";
+            reason.classList.toggle("hidden", !profile.reason);
         }
 
         function applyStateAwarePanels(status) {
@@ -1316,6 +1564,22 @@
             return normalized.charAt(0).toUpperCase() + normalized.slice(1);
         }
 
+        function formatProfileSummary(profile) {
+            const parts = [];
+            if (profile.followsCode) {
+                parts.push("follow code");
+            }
+            if (profile.backend && profile.model) {
+                parts.push(`${profile.backend} / ${profile.model}`);
+            } else if (profile.backend) {
+                parts.push(profile.backend);
+            }
+            if (profile.source === "env_fallback") {
+                parts.push("env fallback");
+            }
+            return parts.join(" · ");
+        }
+
         function formatApplyResult(detail) {
             if (detail.appliedEvents?.length > 0) {
                 return detail.appliedEvents.map((item) => {
@@ -1371,6 +1635,11 @@
             signature.classList.toggle("hidden", !data.signature);
 
             document.getElementById("event-count").textContent = `${data.eventCount} linked event(s)`;
+            const explainProfile = document.getElementById("explain-profile");
+            explainProfile.textContent = data.profile
+                ? formatProfileSummary(data.profile)
+                : "";
+            explainProfile.classList.toggle("hidden", !data.profile);
             document.getElementById("summary-text").textContent = data.summary || "";
             document.getElementById("summary-text").classList.toggle("hidden", !data.summary);
             document.getElementById("history-disclaimer").textContent = data.disclaimer || "";

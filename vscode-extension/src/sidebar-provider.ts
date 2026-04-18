@@ -6,8 +6,15 @@ import type * as vscode from "vscode";
 
 import type { CodingTaskSessionHandlers, TailEventsApi } from "./api-client";
 import { toWorkspaceRelativePath } from "./path-utils";
+import {
+    buildCapabilitySummary,
+    ProfileStateStore,
+    resolveCodeEffectiveProfile,
+    resolveExplainEffectiveProfile,
+} from "./profile-resolver";
 import type {
     ApiResult,
+    BackendCodingCapabilitiesResponse,
     BackendCodingTaskHistoryDetail,
     BackendEntityExplanation,
     BackendExplanationStreamInit,
@@ -15,10 +22,14 @@ import type {
     BackendTaskStepEvent,
     BackendToolCallPayload,
     CodeExplainEntityViewModel,
+    CodeHistoryFiltersViewModel,
+    CodeHistoryPageViewModel,
     CodePickerKind,
     CodePickerViewModel,
     CodeTaskStatus,
     CodeViewModel,
+    EffectiveProfileViewModel,
+    HistoryFilterStatus,
     CodingTaskHistoryDetailViewModel,
     CodingTaskHistoryItemViewModel,
     CodingTaskLaunchMode,
@@ -84,13 +95,16 @@ interface SidebarRuntime {
         files: Array<{ workspaceFilePath: string; absolutePath: string; content: string }>,
     ) => Promise<boolean>;
     openWorkspaceFile?: (workspaceFilePath: string) => Promise<boolean>;
+    executeCommand?: (command: string) => Promise<unknown>;
 }
 
 interface SidebarProviderOptions {
     apiClient: TailEventsApi;
     templatePath: string;
     getBaseUrl: () => string;
-    getSelectedProfileId?: () => string | null;
+    profileStateStore?: ProfileStateStore;
+    getCodeProfilePreferenceId?: () => string | null;
+    getExplainProfilePreferenceId?: () => string | null;
     runtime: SidebarRuntime;
 }
 
@@ -139,6 +153,17 @@ interface TaskContext {
     originalContent: string;
 }
 
+interface HistoryQueryState {
+    limit: number;
+    offset: number;
+    status: HistoryFilterStatus;
+    targetFilePath: string | null;
+    targetQuery: string;
+    total: number;
+    hasMore: boolean;
+    queryVersion: number;
+}
+
 export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
     private readonly apiClient: TailEventsApi;
 
@@ -146,7 +171,11 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
 
     private readonly getBaseUrl: () => string;
 
-    private readonly getSelectedProfileId: (() => string | null) | undefined;
+    private readonly profileStateStore: ProfileStateStore;
+
+    private readonly getCodeProfilePreferenceId: () => string | null;
+
+    private readonly getExplainProfilePreferenceId: () => string | null;
 
     private readonly runtime: SidebarRuntime;
 
@@ -161,6 +190,8 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
     private currentTaskAbortController: AbortController | null = null;
 
     private currentHistoryAbortController: AbortController | null = null;
+
+    private currentHistoryTargetsAbortController: AbortController | null = null;
 
     private currentTaskContext: TaskContext | null = null;
 
@@ -194,7 +225,7 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
 
     private currentTaskSourceTaskId: string | null = null;
 
-    private selectedProfileId: string | null = null;
+    private overrideCodeProfileId: string | null = null;
 
     private requestedCapabilities: CodingTaskRequestedCapability[] = [];
 
@@ -224,6 +255,21 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
 
     private workspacePythonFiles: WorkspaceFileCandidate[] = [];
 
+    private historyTargetSuggestions: string[] = [];
+
+    private historyTargetSuggestionsLoading = false;
+
+    private historyQueryState: HistoryQueryState = {
+        limit: 20,
+        offset: 0,
+        status: "all",
+        targetFilePath: null,
+        targetQuery: "",
+        total: 0,
+        hasMore: false,
+        queryVersion: 0,
+    };
+
     private codeModelAttempt = 0;
 
     private lastExplainState: SidebarMessageToWebview = {
@@ -234,7 +280,9 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
     public constructor(options: SidebarProviderOptions) {
         this.apiClient = options.apiClient;
         this.getBaseUrl = options.getBaseUrl;
-        this.getSelectedProfileId = options.getSelectedProfileId;
+        this.profileStateStore = options.profileStateStore ?? new ProfileStateStore(options.apiClient);
+        this.getCodeProfilePreferenceId = options.getCodeProfilePreferenceId ?? (() => null);
+        this.getExplainProfilePreferenceId = options.getExplainProfilePreferenceId ?? (() => null);
         this.runtime = options.runtime;
         this.template = readFileSync(options.templatePath, "utf8");
     }
@@ -246,6 +294,14 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
     public async showExplainEntity(entityId: string): Promise<void> {
         await this.setMode("explain");
         await this.loadEntity(entityId);
+    }
+
+    public async refreshAfterProfileChange(options?: { reloadExplain?: boolean }): Promise<void> {
+        await this.profileStateStore.refresh();
+        await this.postCodeState();
+        if (options?.reloadExplain && this.currentEntityId) {
+            await this.loadEntity(this.currentEntityId);
+        }
     }
 
     public resolveWebviewView(webviewView: vscode.WebviewView): void {
@@ -261,6 +317,17 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
 
     public async loadEntity(entityId: string): Promise<void> {
         const signal = this.cancelPendingExplain();
+        await this.profileStateStore.ensureLoaded(signal);
+        const explainProfile = this.getExplainEffectiveProfile();
+        if (!explainProfile.available) {
+            this.currentEntityId = entityId;
+            this.lastExplainState = {
+                type: "state:empty",
+                message: explainProfile.reason ?? "Explain profile is not available.",
+            };
+            await this.postMessage(this.lastExplainState);
+            return;
+        }
         this.currentEntityId = entityId;
         this.lastExplainState = {
             type: "state:loading",
@@ -297,7 +364,7 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
             {
                 onInit: (payload) => {
                     receivedInit = true;
-                    viewModel = buildInitialViewModel(payload);
+                    viewModel = buildInitialViewModel(payload, explainProfile);
                     applyTimeline();
                     void postCurrentView();
                 },
@@ -324,6 +391,7 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
                 },
             },
             signal,
+            explainProfile.resolvedProfileId ?? undefined,
         );
 
         const timelinePromise = this.apiClient.getEntityEvents(entityId, signal).then((result) => {
@@ -362,6 +430,7 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
 
     public async setMode(mode: SidebarMode): Promise<void> {
         this.currentMode = mode;
+        await this.profileStateStore.ensureLoaded();
         if (mode === "code") {
             this.captureFollowableTargetFromActiveEditor();
         } else {
@@ -388,6 +457,7 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
     private async handleMessage(message: SidebarMessageFromWebview): Promise<void> {
         switch (message.type) {
             case "ready":
+                await this.profileStateStore.refresh();
                 this.captureFollowableTargetFromActiveEditor();
                 await this.postMessage({
                     type: "mode:update",
@@ -468,6 +538,24 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
                 return;
             case "replayHistoryTask":
                 await this.replayHistoryTask(message.taskId);
+                return;
+            case "selectCodeProfile":
+                await this.runtime.executeCommand?.("tailEvents.selectCodeProfile");
+                return;
+            case "selectExplainProfile":
+                await this.runtime.executeCommand?.("tailEvents.selectExplainProfile");
+                return;
+            case "setHistoryStatusFilter":
+                await this.setHistoryStatusFilter(message.status);
+                return;
+            case "setHistoryTargetQuery":
+                await this.setHistoryTargetQuery(message.query);
+                return;
+            case "setHistoryTargetSelection":
+                await this.setHistoryTargetSelection(message.targetFilePath);
+                return;
+            case "loadMoreHistory":
+                await this.loadMoreHistory();
                 return;
             default:
                 return;
@@ -679,6 +767,14 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
             await this.setCodeState("error", APPLY_FAILED_MESSAGE);
             return;
         }
+        const codeProfile = this.getCodeEffectiveProfile();
+        if (!codeProfile.available) {
+            await this.setCodeState(
+                "error",
+                codeProfile.reason ?? "Code profile is not available.",
+            );
+            return;
+        }
 
         this.currentTaskResult = null;
         this.currentTaskContext = taskContext;
@@ -695,7 +791,6 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         this.currentTaskLaunchMode = pendingReplaySourceTaskId ? "replay" : "new";
         this.currentTaskSourceTaskId = pendingReplaySourceTaskId;
         await this.setCodeState("running", TASK_RUNNING_MESSAGE);
-        const selectedProfileId = this.selectedProfileId ?? this.getSelectedProfileId?.() ?? null;
 
         const handlers: CodingTaskSessionHandlers = {
             onCreated: (taskId) => {
@@ -745,7 +840,7 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
                 editable_files: editablePayload,
                 launch_mode: pendingReplaySourceTaskId ? "replay" : "new",
                 source_task_id: pendingReplaySourceTaskId,
-                selected_profile_id: selectedProfileId,
+                selected_profile_id: codeProfile.resolvedProfileId ?? null,
                 requested_capabilities: this.requestedCapabilities,
             },
             handlers,
@@ -887,19 +982,38 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    private async refreshHistory(preferredTaskId?: string | null): Promise<void> {
+    private async refreshHistory(
+        preferredTaskId?: string | null,
+        options?: { append?: boolean },
+    ): Promise<void> {
+        const append = options?.append === true;
         this.currentHistoryAbortController?.abort();
         const controller = new AbortController();
         this.currentHistoryAbortController = controller;
+        const queryVersion = this.historyQueryState.queryVersion + 1;
+        this.historyQueryState.queryVersion = queryVersion;
         this.codeHistoryLoading = true;
         this.codeHistoryError = null;
         await this.postCodeState();
 
+        const requestOffset = append ? this.codeHistoryItems.length : 0;
         const historyResult = await this.apiClient.getCodingTaskHistory(
-            { limit: 20, offset: 0 },
+            {
+                limit: this.historyQueryState.limit,
+                offset: requestOffset,
+                status:
+                    this.historyQueryState.status === "all"
+                        ? undefined
+                        : this.historyQueryState.status,
+                targetFilePath: this.historyQueryState.targetFilePath ?? undefined,
+            },
             controller.signal,
         );
-        if (this.currentHistoryAbortController !== controller || controller.signal.aborted) {
+        if (
+            this.currentHistoryAbortController !== controller ||
+            controller.signal.aborted ||
+            this.historyQueryState.queryVersion !== queryVersion
+        ) {
             return;
         }
 
@@ -919,22 +1033,33 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
                 has_more: false,
             }
             : historyResult.data;
-        const selectedTaskId = this.resolveSelectedHistoryTaskId(
-            historyPage.items,
-            preferredTaskId,
-        );
-        this.selectedHistoryTaskId = selectedTaskId;
-        this.codeHistoryItems = historyPage.items.map((item) => {
-            return {
+
+        const mergedItems = append
+            ? mergeHistoryItems(
+                this.codeHistoryItems,
+                historyPage.items,
+            )
+            : historyPage.items.map((item) => ({
                 taskId: item.task_id,
                 targetFilePath: item.target_file_path,
                 userPrompt: item.user_prompt,
                 status: item.status,
                 createdAt: item.created_at,
                 updatedAt: item.updated_at,
-                selected: item.task_id === selectedTaskId,
-            };
-        });
+                selected: false,
+            }));
+        const selectedTaskId = this.resolveSelectedHistoryTaskId(
+            mergedItems.map((item) => ({ task_id: item.taskId })),
+            preferredTaskId,
+        );
+        this.selectedHistoryTaskId = selectedTaskId;
+        this.codeHistoryItems = mergedItems.map((item) => ({
+            ...item,
+            selected: item.taskId === selectedTaskId,
+        }));
+        this.historyQueryState.offset = this.codeHistoryItems.length;
+        this.historyQueryState.total = historyPage.total;
+        this.historyQueryState.hasMore = historyPage.has_more;
 
         if (!selectedTaskId) {
             this.codeHistoryLoading = false;
@@ -944,11 +1069,27 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
             return;
         }
 
+        if (
+            append &&
+            this.codeHistoryDetail &&
+            this.codeHistoryDetail.taskId === selectedTaskId &&
+            !preferredTaskId
+        ) {
+            this.codeHistoryLoading = false;
+            this.currentHistoryAbortController = null;
+            await this.postCodeState();
+            return;
+        }
+
         const detailResult = await this.apiClient.getCodingTaskHistoryDetail(
             selectedTaskId,
             controller.signal,
         );
-        if (this.currentHistoryAbortController !== controller || controller.signal.aborted) {
+        if (
+            this.currentHistoryAbortController !== controller ||
+            controller.signal.aborted ||
+            this.historyQueryState.queryVersion !== queryVersion
+        ) {
             return;
         }
 
@@ -965,6 +1106,66 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         this.codeHistoryDetail = toHistoryDetailViewModel(detailResult.data);
         this.currentHistoryAbortController = null;
         await this.postCodeState();
+    }
+
+    private async setHistoryStatusFilter(status: HistoryFilterStatus): Promise<void> {
+        this.historyQueryState.status = status;
+        this.historyQueryState.offset = 0;
+        await this.refreshHistory();
+    }
+
+    private async setHistoryTargetQuery(query: string): Promise<void> {
+        this.historyQueryState.targetQuery = query;
+        await this.loadHistoryTargetSuggestions(query);
+        await this.postCodeState();
+    }
+
+    private async setHistoryTargetSelection(targetFilePath: string | null): Promise<void> {
+        this.historyQueryState.targetFilePath = targetFilePath;
+        this.historyQueryState.targetQuery = targetFilePath ?? "";
+        if (!targetFilePath) {
+            this.historyTargetSuggestions = [];
+        }
+        this.historyQueryState.offset = 0;
+        await this.refreshHistory();
+    }
+
+    private async loadMoreHistory(): Promise<void> {
+        if (this.codeHistoryLoading || !this.historyQueryState.hasMore) {
+            return;
+        }
+        await this.refreshHistory(this.selectedHistoryTaskId, { append: true });
+    }
+
+    private async loadHistoryTargetSuggestions(query: string): Promise<void> {
+        if (!this.apiClient.getCodingTaskHistoryTargets) {
+            this.historyTargetSuggestions = [];
+            this.historyTargetSuggestionsLoading = false;
+            return;
+        }
+        this.currentHistoryTargetsAbortController?.abort();
+        const controller = new AbortController();
+        this.currentHistoryTargetsAbortController = controller;
+        this.historyTargetSuggestionsLoading = true;
+        await this.postCodeState();
+
+        const result = await this.apiClient.getCodingTaskHistoryTargets(
+            {
+                query,
+                limit: 10,
+            },
+            controller.signal,
+        );
+        if (
+            this.currentHistoryTargetsAbortController !== controller ||
+            controller.signal.aborted
+        ) {
+            return;
+        }
+
+        this.historyTargetSuggestionsLoading = false;
+        this.currentHistoryTargetsAbortController = null;
+        this.historyTargetSuggestions = result.ok ? result.data.items : [];
     }
 
     private async reuseHistoryTask(taskId: string): Promise<void> {
@@ -993,7 +1194,7 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         this.pendingReplaySourceTaskId = null;
         this.currentTaskLaunchMode = "new";
         this.currentTaskSourceTaskId = null;
-        this.selectedProfileId = activeDetail.selectedProfileId;
+        this.overrideCodeProfileId = activeDetail.selectedProfileId;
         this.requestedCapabilities = [...activeDetail.requestedCapabilities];
         this.codeHistoryNotice = this.buildHistoryNotice(
             HISTORY_REUSED_MESSAGE,
@@ -1045,7 +1246,7 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         this.pendingReplaySourceTaskId = activeDetail.taskId;
         this.currentTaskLaunchMode = "replay";
         this.currentTaskSourceTaskId = activeDetail.taskId;
-        this.selectedProfileId = activeDetail.selectedProfileId;
+        this.overrideCodeProfileId = activeDetail.selectedProfileId;
         this.requestedCapabilities = [...activeDetail.requestedCapabilities];
         this.codeHistoryNotice = this.buildHistoryNotice(
             HISTORY_REPLAY_READY_MESSAGE,
@@ -1690,6 +1891,26 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         throw new Error("File reading is not available in the current runtime.");
     }
 
+    private getCodeEffectiveProfile(): EffectiveProfileViewModel {
+        return resolveCodeEffectiveProfile(
+            this.profileStateStore.getProfiles(),
+            this.overrideCodeProfileId ?? this.getCodeProfilePreferenceId(),
+        );
+    }
+
+    private getExplainEffectiveProfile(): EffectiveProfileViewModel {
+        const codeProfile = this.getCodeEffectiveProfile();
+        return resolveExplainEffectiveProfile(
+            this.profileStateStore.getProfiles(),
+            codeProfile,
+            this.getExplainProfilePreferenceId(),
+        );
+    }
+
+    private getCapabilitySnapshot(): BackendCodingCapabilitiesResponse | null {
+        return this.profileStateStore.getCapabilities();
+    }
+
     private appendTranscript(line: string): void {
         if (!line) {
             return;
@@ -1719,6 +1940,9 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         const launchMode =
             this.pendingReplaySourceTaskId !== null ? "replay" : this.currentTaskLaunchMode;
         const sourceTaskId = this.pendingReplaySourceTaskId ?? this.currentTaskSourceTaskId;
+        const codeProfile = this.getCodeEffectiveProfile();
+        const explainProfile = this.getExplainEffectiveProfile();
+        const capabilitySummary = buildCapabilitySummary(this.getCapabilitySnapshot());
         const data: CodeViewModel = {
             filePath: targetState.filePath,
             targetSelectionMode: targetState.selectionMode,
@@ -1736,17 +1960,24 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
             draftText: this.codeDraftText,
             message:
                 this.codeMessage ??
+                codeProfile.reason ??
                 targetState.reason ??
                 defaultCodeMessage(this.codeStatus),
             canRun:
                 targetState.targetReference !== null &&
+                codeProfile.available &&
                 this.codeStatus !== "running" &&
                 this.codeStatus !== "applying",
             canCancel: this.codeStatus === "running",
             canApply: this.codeStatus === "ready_to_apply" && this.currentTaskResult !== null,
+            codeProfile,
+            explainProfile,
+            capabilitySummary,
             historyLoading: this.codeHistoryLoading,
             historyError: this.codeHistoryError,
             historyNotice: this.codeHistoryNotice,
+            historyPage: this.buildHistoryPageViewModel(),
+            historyFilters: this.buildHistoryFiltersViewModel(),
             historyItems: this.codeHistoryItems,
             historyDetail: this.codeHistoryDetail,
         };
@@ -1754,6 +1985,26 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
             type: "code:update",
             data,
         });
+    }
+
+    private buildHistoryPageViewModel(): CodeHistoryPageViewModel {
+        return {
+            total: this.historyQueryState.total,
+            filteredCount: this.codeHistoryItems.length,
+            limit: this.historyQueryState.limit,
+            offset: this.historyQueryState.offset,
+            hasMore: this.historyQueryState.hasMore,
+        };
+    }
+
+    private buildHistoryFiltersViewModel(): CodeHistoryFiltersViewModel {
+        return {
+            status: this.historyQueryState.status,
+            targetFilePath: this.historyQueryState.targetFilePath,
+            targetQuery: this.historyQueryState.targetQuery,
+            targetSuggestions: [...this.historyTargetSuggestions],
+            targetSuggestionsLoading: this.historyTargetSuggestionsLoading,
+        };
     }
 
     private resolveSelectedHistoryTaskId(
@@ -1794,7 +2045,10 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
     }
 }
 
-function buildInitialViewModel(payload: BackendExplanationStreamInit): SidebarViewModel {
+function buildInitialViewModel(
+    payload: BackendExplanationStreamInit,
+    profile: EffectiveProfileViewModel,
+): SidebarViewModel {
     const [lineStart, lineEnd] = payload.line_range ?? [null, null];
     const summary = typeof payload.summary === "string" && payload.summary.trim().length > 0
         ? payload.summary
@@ -1821,6 +2075,10 @@ function buildInitialViewModel(payload: BackendExplanationStreamInit): SidebarVi
         callers: [],
         callees: [],
         relatedEntities: [],
+        profile: {
+            ...profile,
+            resolvedProfileId: payload.resolved_profile_id ?? profile.resolvedProfileId,
+        },
     };
 }
 
@@ -1849,6 +2107,13 @@ function mergeFinalExplanation(
     );
     viewModel.relatedEntities = buildRelatedEntities(explanation);
     viewModel.streamError = null;
+    if (viewModel.profile) {
+        viewModel.profile = {
+            ...viewModel.profile,
+            resolvedProfileId:
+                explanation.resolved_profile_id ?? viewModel.profile.resolvedProfileId,
+        };
+    }
 }
 
 function buildTimeline(events: BackendTailEvent[]): TimelineItemViewModel[] {
@@ -1912,6 +2177,39 @@ function getDisclaimer(historySource: string | null | undefined): string | null 
         return MIXED_DISCLAIMER;
     }
     return null;
+}
+
+function mergeHistoryItems(
+    existing: CodingTaskHistoryItemViewModel[],
+    incoming: Array<{
+        task_id: string;
+        target_file_path: string;
+        user_prompt: string;
+        status: string;
+        created_at: string;
+        updated_at: string;
+    }>,
+): CodingTaskHistoryItemViewModel[] {
+    const merged = new Map<string, CodingTaskHistoryItemViewModel>();
+
+    for (const item of existing) {
+        merged.set(item.taskId, { ...item, selected: false });
+    }
+    for (const item of incoming) {
+        merged.set(item.task_id, {
+            taskId: item.task_id,
+            targetFilePath: item.target_file_path,
+            userPrompt: item.user_prompt,
+            status: item.status as CodingTaskHistoryItemViewModel["status"],
+            createdAt: item.created_at,
+            updatedAt: item.updated_at,
+            selected: false,
+        });
+    }
+
+    return [...merged.values()].sort((left, right) => {
+        return Date.parse(right.updatedAt) - Date.parse(left.updatedAt);
+    });
 }
 
 function toHistoryDetailViewModel(

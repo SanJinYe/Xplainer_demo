@@ -34,8 +34,10 @@ from tailevents.models.explanation import (
     RelationContext,
     RelationContextItem,
 )
+from tailevents.models.profile import ResolvedCodingProfile
 from tailevents.models.protocols import (
     CacheProtocol,
+    CodingProfileRegistryProtocol,
     DocRetrieverProtocol,
     EntityDBProtocol,
     EventStoreProtocol,
@@ -119,8 +121,9 @@ class ExplanationEngine(ExplanationEngineProtocol):
         event_store: EventStoreProtocol,
         relation_store: RelationStoreProtocol,
         cache: Optional[CacheProtocol],
-        llm_client: LLMClientProtocol,
         doc_retriever: DocRetrieverProtocol,
+        profile_registry: Optional[CodingProfileRegistryProtocol] = None,
+        llm_client: Optional[LLMClientProtocol] = None,
         context_assembler: Optional[ContextAssembler] = None,
         formatter: Optional[ExplanationFormatter] = None,
         max_events: int = 20,
@@ -139,7 +142,8 @@ class ExplanationEngine(ExplanationEngineProtocol):
         self._event_store = event_store
         self._relation_store = relation_store
         self._cache = cache
-        self._llm_client = llm_client
+        self._profile_registry = profile_registry
+        self._default_llm_client = llm_client
         self._doc_retriever = doc_retriever
         self._context_assembler = context_assembler or ContextAssembler()
         self._formatter = formatter or ExplanationFormatter()
@@ -156,32 +160,52 @@ class ExplanationEngine(ExplanationEngineProtocol):
         self._telemetry = telemetry or ExplanationMetricsTracker()
         self._detailed_sessions: dict[str, _DetailedStreamSession] = {}
         self._detailed_sessions_lock = asyncio.Lock()
+        if self._profile_registry is None and self._default_llm_client is None:
+            raise ValueError("ExplanationEngine requires a profile registry or a default llm_client")
 
     async def explain_entity(
         self,
         entity_id: str,
         detail_level: str = "summary",
         include_relations: bool = False,
+        profile_id: Optional[str] = None,
     ) -> EntityExplanation:
         self._validate_detail_level(detail_level)
+        resolved_profile = self._resolve_profile(profile_id)
         if detail_level == "summary":
-            return await self._explain_summary_fast(entity_id)
+            return await self._explain_summary_fast(entity_id, resolved_profile)
         if detail_level == "detailed":
-            return await self._explain_detailed(entity_id, include_relations)
-        return await self._explain_blocking(entity_id, detail_level, include_relations)
+            return await self._explain_detailed(
+                entity_id,
+                include_relations,
+                resolved_profile,
+            )
+        return await self._explain_blocking(
+            entity_id,
+            detail_level,
+            include_relations,
+            resolved_profile,
+        )
 
     async def stream_explain_entity(
         self,
         entity_id: str,
         include_relations: bool = True,
+        profile_id: Optional[str] = None,
     ) -> AsyncIterator[ExplanationStreamEvent]:
         started_at = time.perf_counter()
         first_event_at: Optional[float] = None
         output_chars = 0
         cache_hit = False
         saw_error = False
+        resolved_profile = self._resolve_profile(profile_id)
 
-        cache_key = self._build_cache_key(entity_id, "detailed", include_relations)
+        cache_key = self._build_cache_key(
+            entity_id,
+            "detailed",
+            include_relations,
+            resolved_profile,
+        )
         cached = await self._get_cached_explanation(cache_key)
         if cached is not None:
             entity = await self._get_entity_or_raise(entity_id)
@@ -192,6 +216,7 @@ class ExplanationEngine(ExplanationEngineProtocol):
                 entity=entity,
                 summary=init_summary,
                 history_source=history_source,
+                resolved_profile=resolved_profile,
             )
             first_event_at = time.perf_counter()
             output_chars = len(cached.detailed_explanation or "")
@@ -209,7 +234,11 @@ class ExplanationEngine(ExplanationEngineProtocol):
                 )
             return
 
-        session = await self._get_or_create_detailed_session(entity_id, include_relations)
+        session = await self._get_or_create_detailed_session(
+            entity_id,
+            include_relations,
+            resolved_profile,
+        )
         queue = session.subscribe()
         try:
             while True:
@@ -243,6 +272,7 @@ class ExplanationEngine(ExplanationEngineProtocol):
         entity_ids: list[str],
         detail_level: str = "summary",
         include_relations: bool = False,
+        profile_id: Optional[str] = None,
     ) -> list[EntityExplanation]:
         explanations: list[EntityExplanation] = []
         for entity_id in entity_ids:
@@ -251,6 +281,7 @@ class ExplanationEngine(ExplanationEngineProtocol):
                     entity_id=entity_id,
                     detail_level=detail_level,
                     include_relations=include_relations,
+                    profile_id=profile_id,
                 )
             )
         return explanations
@@ -261,7 +292,11 @@ class ExplanationEngine(ExplanationEngineProtocol):
     def reset_metrics(self) -> None:
         self._telemetry.reset()
 
-    async def _explain_summary_fast(self, entity_id: str) -> EntityExplanation:
+    async def _explain_summary_fast(
+        self,
+        entity_id: str,
+        resolved_profile: ResolvedCodingProfile,
+    ) -> EntityExplanation:
         started_at = time.perf_counter()
         entity = await self._get_entity_or_raise(entity_id)
         all_events = await self._load_all_events(entity)
@@ -274,6 +309,7 @@ class ExplanationEngine(ExplanationEngineProtocol):
             qualified_name=entity.qualified_name,
             entity_type=entity.entity_type,
             signature=entity.signature,
+            resolved_profile_id=resolved_profile.resolved_profile_id,
             summary=summary or "",
             detailed_explanation=None,
             creation_intent=self._creation_intent(all_events, history_source),
@@ -295,13 +331,23 @@ class ExplanationEngine(ExplanationEngineProtocol):
         self,
         entity_id: str,
         include_relations: bool,
+        resolved_profile: ResolvedCodingProfile,
     ) -> EntityExplanation:
-        cache_key = self._build_cache_key(entity_id, "detailed", include_relations)
+        cache_key = self._build_cache_key(
+            entity_id,
+            "detailed",
+            include_relations,
+            resolved_profile,
+        )
         cached = await self._get_cached_explanation(cache_key)
         if cached is not None:
             return cached
 
-        session = await self._get_or_create_detailed_session(entity_id, include_relations)
+        session = await self._get_or_create_detailed_session(
+            entity_id,
+            include_relations,
+            resolved_profile,
+        )
         explanation = await session.result()
         return explanation.model_copy(update={"from_cache": False})
 
@@ -310,8 +356,14 @@ class ExplanationEngine(ExplanationEngineProtocol):
         entity_id: str,
         detail_level: str,
         include_relations: bool,
+        resolved_profile: ResolvedCodingProfile,
     ) -> EntityExplanation:
-        cache_key = self._build_cache_key(entity_id, detail_level, include_relations)
+        cache_key = self._build_cache_key(
+            entity_id,
+            detail_level,
+            include_relations,
+            resolved_profile,
+        )
         cached = await self._get_cached_explanation(cache_key)
         if cached is not None:
             return cached
@@ -320,8 +372,9 @@ class ExplanationEngine(ExplanationEngineProtocol):
             entity_id=entity_id,
             detail_level=detail_level,
             include_relations=include_relations,
+            resolved_profile=resolved_profile,
         )
-        raw_output = await self._llm_client.generate(
+        raw_output = await resolved_profile.llm_client.generate(
             system_prompt=SYSTEM_PROMPT,
             user_prompt=prepared.user_prompt,
             max_tokens=self._max_tokens(detail_level),
@@ -336,6 +389,7 @@ class ExplanationEngine(ExplanationEngineProtocol):
             doc_snippets=prepared.doc_snippets,
             raw_output=raw_output,
             detail_level=detail_level,
+            resolved_profile=resolved_profile,
         )
         if detail_level == "detailed":
             await self._entity_db.update_description(
@@ -349,8 +403,14 @@ class ExplanationEngine(ExplanationEngineProtocol):
         self,
         entity_id: str,
         include_relations: bool,
+        resolved_profile: ResolvedCodingProfile,
     ) -> _DetailedStreamSession:
-        cache_key = self._build_cache_key(entity_id, "detailed", include_relations)
+        cache_key = self._build_cache_key(
+            entity_id,
+            "detailed",
+            include_relations,
+            resolved_profile,
+        )
 
         async with self._detailed_sessions_lock:
             existing = self._detailed_sessions.get(cache_key)
@@ -361,12 +421,14 @@ class ExplanationEngine(ExplanationEngineProtocol):
             entity_id=entity_id,
             detail_level="detailed",
             include_relations=include_relations,
+            resolved_profile=resolved_profile,
         )
         init_summary, _ = self._build_fast_summary(prepared.entity, prepared.all_events)
         init_event = self._build_stream_init(
             entity=prepared.entity,
             summary=init_summary,
             history_source=prepared.history_source,
+            resolved_profile=resolved_profile,
         )
 
         async with self._detailed_sessions_lock:
@@ -380,6 +442,7 @@ class ExplanationEngine(ExplanationEngineProtocol):
                     cache_key=cache_key,
                     session=session,
                     prepared=prepared,
+                    resolved_profile=resolved_profile,
                 )
             )
             return session
@@ -390,6 +453,7 @@ class ExplanationEngine(ExplanationEngineProtocol):
         cache_key: str,
         session: _DetailedStreamSession,
         prepared: _PreparedExplanation,
+        resolved_profile: ResolvedCodingProfile,
     ) -> None:
         raw_chunks: list[str] = []
         flush_buffer = ""
@@ -397,7 +461,7 @@ class ExplanationEngine(ExplanationEngineProtocol):
 
         try:
             async with self._detailed_semaphore:
-                stream = self._llm_client.stream_generate(
+                stream = resolved_profile.llm_client.stream_generate(
                     system_prompt=SYSTEM_PROMPT,
                     user_prompt=prepared.user_prompt,
                     max_tokens=self._max_tokens("detailed"),
@@ -444,6 +508,7 @@ class ExplanationEngine(ExplanationEngineProtocol):
                 doc_snippets=prepared.doc_snippets,
                 raw_output="".join(raw_chunks),
                 detail_level="detailed",
+                resolved_profile=resolved_profile,
             )
             await self._entity_db.update_description(
                 prepared.entity.entity_id,
@@ -467,6 +532,7 @@ class ExplanationEngine(ExplanationEngineProtocol):
         entity_id: str,
         detail_level: str,
         include_relations: bool,
+        resolved_profile: ResolvedCodingProfile,
     ) -> _PreparedExplanation:
         entity = await self._get_entity_or_raise(entity_id)
         all_events = await self._load_all_events(entity)
@@ -814,16 +880,22 @@ class ExplanationEngine(ExplanationEngineProtocol):
         entity_id: str,
         detail_level: str,
         include_relations: bool,
+        resolved_profile: ResolvedCodingProfile,
     ) -> str:
         return (
             f"explain:{entity_id}:{detail_level}:{int(include_relations)}:"
-            f"{EXPLANATION_PROMPT_VERSION}:{self._model_profile(detail_level)}"
+            f"{EXPLANATION_PROMPT_VERSION}:{resolved_profile.resolved_profile_id}:"
+            f"{self._model_profile(detail_level, resolved_profile)}"
         )
 
-    def _model_profile(self, detail_level: str) -> str:
-        model_name = self._llm_model_name or "default"
+    def _model_profile(
+        self,
+        detail_level: str,
+        resolved_profile: ResolvedCodingProfile,
+    ) -> str:
+        model_name = resolved_profile.model or self._llm_model_name or "default"
         return (
-            f"{self._llm_backend_name}:{model_name}:"
+            f"{resolved_profile.backend or self._llm_backend_name}:{model_name}:"
             f"{self._max_tokens(detail_level)}:{self._temperature}"
         )
 
@@ -875,6 +947,7 @@ class ExplanationEngine(ExplanationEngineProtocol):
         entity: CodeEntity,
         summary: Optional[str],
         history_source: HistorySource,
+        resolved_profile: ResolvedCodingProfile,
     ) -> ExplanationStreamInit:
         return ExplanationStreamInit(
             entity_id=entity.entity_id,
@@ -882,6 +955,7 @@ class ExplanationEngine(ExplanationEngineProtocol):
             qualified_name=entity.qualified_name,
             entity_type=entity.entity_type,
             signature=entity.signature,
+            resolved_profile_id=resolved_profile.resolved_profile_id,
             file_path=entity.file_path,
             line_range=entity.line_range,
             event_count=len(entity.event_refs),
@@ -900,12 +974,14 @@ class ExplanationEngine(ExplanationEngineProtocol):
         doc_snippets: list[dict],
         raw_output: str,
         detail_level: str,
+        resolved_profile: ResolvedCodingProfile,
     ) -> EntityExplanation:
         explanation = self._formatter.format(
             entity,
             raw_output,
             detail_level=detail_level,
         )
+        explanation.resolved_profile_id = resolved_profile.resolved_profile_id
         explanation.creation_intent = explanation.creation_intent or self._creation_intent(
             all_events,
             history_source,
@@ -917,6 +993,21 @@ class ExplanationEngine(ExplanationEngineProtocol):
         explanation.external_doc_snippets = doc_snippets
         explanation.from_cache = False
         return explanation
+
+    def _resolve_profile(self, profile_id: Optional[str]) -> ResolvedCodingProfile:
+        if self._profile_registry is not None:
+            return self._profile_registry.resolve_profile(profile_id)
+        if profile_id:
+            raise ValueError("Explanation profile selection is not configured on the backend")
+        if self._default_llm_client is None:
+            raise ValueError("Explanation backend is not configured")
+        return ResolvedCodingProfile(
+            resolved_profile_id="default",
+            backend=self._llm_backend_name,
+            model=self._llm_model_name,
+            source="env_fallback",
+            llm_client=self._default_llm_client,
+        )
 
 
 __all__ = ["ExplanationEngine"]

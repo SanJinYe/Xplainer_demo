@@ -152,6 +152,34 @@ class SQLiteCodingTaskStore(CodingTaskStoreProtocol):
         total = 0 if count_row is None else int(count_row["count"])
         return ([self._row_to_record(row) for row in rows], total)
 
+    async def list_recent_target_paths(
+        self,
+        query: Optional[str] = None,
+        limit: int = 20,
+    ) -> list[str]:
+        params: list[Any] = []
+        where_sql = ""
+        if query and query.strip():
+            where_sql = "WHERE target_file_path LIKE ? COLLATE NOCASE"
+            params.append(f"%{query.strip()}%")
+
+        async with self._database.connection() as connection:
+            cursor = await connection.execute(
+                f"""
+                SELECT target_file_path, MAX(updated_at) AS latest_updated_at
+                FROM coding_tasks
+                {where_sql}
+                GROUP BY target_file_path
+                ORDER BY latest_updated_at DESC, target_file_path ASC
+                LIMIT ?
+                """,
+                (*params, limit),
+            )
+            rows = await cursor.fetchall()
+            await cursor.close()
+
+        return [str(row["target_file_path"]) for row in rows]
+
     def _row_to_record(self, row: Any) -> CodingTaskRecord:
         verified_files = self._load_json(row["verified_files"], [])
         applied_events = self._load_json(row["applied_events"], [])

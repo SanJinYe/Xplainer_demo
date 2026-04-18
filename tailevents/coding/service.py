@@ -35,6 +35,7 @@ from tailevents.models.task import (
     CodingTaskHistoryDetail,
     CodingTaskHistoryItem,
     CodingTaskHistoryListResponse,
+    CodingTaskHistoryTargetsResponse,
     CodingTaskRecord,
     CodingTaskToolResultRequest,
     EditableFileReference,
@@ -303,6 +304,17 @@ class CodingTaskService:
             offset=offset,
             has_more=offset + len(items) < total,
         )
+
+    async def list_history_target_paths(
+        self,
+        query: Optional[str] = None,
+        limit: int = 20,
+    ) -> CodingTaskHistoryTargetsResponse:
+        items = await self._task_store.list_recent_target_paths(
+            query=query,
+            limit=limit,
+        )
+        return CodingTaskHistoryTargetsResponse(items=items)
 
     async def get_history_detail(self, task_id: str) -> CodingTaskHistoryDetail:
         record = await self._require_task_record(task_id)
