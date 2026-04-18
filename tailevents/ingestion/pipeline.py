@@ -7,7 +7,7 @@ from typing import Optional, Sequence
 from tailevents.ingestion.hooks import IngestionHook
 from tailevents.ingestion.validator import RawEventValidator
 from tailevents.models.enums import EntityRole
-from tailevents.models.event import EntityRef, RawEvent, TailEvent
+from tailevents.models.event import EntityRef, ExternalRef, RawEvent, TailEvent
 from tailevents.models.protocols import EventStoreProtocol, IndexerProtocol
 
 
@@ -22,6 +22,8 @@ class PipelineIndexerResult:
     entities_modified: list[str] = field(default_factory=list)
     entities_deleted: list[str] = field(default_factory=list)
     relations_created: list[str] = field(default_factory=list)
+    external_refs: list[ExternalRef] = field(default_factory=list)
+    graph_changed: bool = False
     pending: bool = False
 
 
@@ -77,8 +79,17 @@ class IngestionPipeline:
 
         if not result.pending:
             entity_refs = self._build_entity_refs(result)
-            await self._event_store.enrich(event.event_id, entity_refs)
-            enriched_event = event.model_copy(update={"entity_refs": entity_refs})
+            await self._event_store.enrich(
+                event.event_id,
+                entity_refs,
+                result.external_refs,
+            )
+            enriched_event = event.model_copy(
+                update={
+                    "entity_refs": entity_refs,
+                    "external_refs": result.external_refs or event.external_refs,
+                }
+            )
 
         await self._run_hooks(enriched_event, result)
         return enriched_event, result
@@ -95,6 +106,8 @@ class IngestionPipeline:
             entities_modified=list(result.entities_modified),
             entities_deleted=list(result.entities_deleted),
             relations_created=list(result.relations_created),
+            external_refs=list(result.external_refs),
+            graph_changed=bool(result.graph_changed),
             pending=bool(result.pending),
         )
 

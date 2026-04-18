@@ -527,6 +527,17 @@
                         <p id="callees-empty" class="muted hidden">No callees.</p>
                         <ul id="callees-list" class="related-list"></ul>
                     </div>
+                    <div class="panel-box">
+                        <h4>Global Impact</h4>
+                        <p id="global-impact-summary" class="muted hidden"></p>
+                        <p id="global-impact-empty" class="muted hidden">No global paths.</p>
+                        <ul id="global-impact-list" class="related-list"></ul>
+                    </div>
+                    <div class="panel-box">
+                        <h4>External Docs</h4>
+                        <p id="external-docs-empty" class="muted hidden">暂未接入</p>
+                        <ul id="external-docs-list" class="related-list"></ul>
+                    </div>
                 </section>
             </section>
         </section>
@@ -1675,6 +1686,8 @@
 
             renderRelatedList("callers-list", "callers-empty", data.callers);
             renderRelatedList("callees-list", "callees-empty", data.callees);
+            renderGlobalImpactList(data.globalImpactPaths, data.globalImpactSummary);
+            renderExternalDocsList(data.externalDocs, data.externalDocsPlaceholder);
         }
 
         function renderRelatedList(listId, emptyId, items) {
@@ -1699,6 +1712,71 @@
                 meta.className = "muted";
                 meta.textContent = `${item.relationLabel} - ${item.qualifiedName}`;
                 li.appendChild(meta);
+                list.appendChild(li);
+            });
+        }
+
+        function renderGlobalImpactList(items, summary) {
+            const summaryElement = document.getElementById("global-impact-summary");
+            summaryElement.textContent = summary || "";
+            summaryElement.classList.toggle("hidden", !summary);
+
+            const empty = document.getElementById("global-impact-empty");
+            empty.classList.toggle("hidden", items.length > 0);
+
+            const list = document.getElementById("global-impact-list");
+            list.replaceChildren();
+            items.forEach((item) => {
+                const li = document.createElement("li");
+                li.className = "related-item";
+
+                const button = document.createElement("button");
+                button.type = "button";
+                button.className = "link-button";
+                button.textContent = `${item.direction}: ${item.terminalLabel}`;
+                button.addEventListener("click", () => {
+                    vscode.postMessage({ type: "openRelatedEntity", entityId: item.terminalEntityId });
+                });
+                li.appendChild(button);
+
+                const pathText = document.createElement("p");
+                pathText.className = "muted";
+                pathText.textContent = item.qualifiedPath;
+                li.appendChild(pathText);
+
+                const costText = document.createElement("p");
+                costText.className = "muted";
+                costText.textContent = item.costLabel;
+                li.appendChild(costText);
+                list.appendChild(li);
+            });
+        }
+
+        function renderExternalDocsList(items, placeholder) {
+            const empty = document.getElementById("external-docs-empty");
+            empty.textContent = placeholder || "No external docs used.";
+            empty.classList.toggle("hidden", items.length > 0);
+
+            const list = document.getElementById("external-docs-list");
+            list.replaceChildren();
+            items.forEach((item) => {
+                const li = document.createElement("li");
+                li.className = "related-item";
+
+                const title = document.createElement("p");
+                title.textContent = item.title;
+                li.appendChild(title);
+
+                const source = document.createElement("p");
+                source.className = "muted";
+                source.textContent = item.sourceLabel;
+                li.appendChild(source);
+
+                const excerpt = document.createElement("p");
+                excerpt.className = "muted";
+                excerpt.textContent = item.excerpt;
+                li.appendChild(excerpt);
+
                 list.appendChild(li);
             });
         }

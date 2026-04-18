@@ -4,6 +4,15 @@ from tailevents.models.baseline import (
     BaselineOnboardFileRequest,
     BaselineOnboardFileResponse,
 )
+from tailevents.models.docs import (
+    AuthorizedDocSnapshot,
+    DocsSyncRequest,
+    DocsSyncResponse,
+    DocsSyncSkippedItem,
+    ExternalDocChunk,
+    ExternalDocMatch,
+    ExternalDocSource,
+)
 from tailevents.models.entity import CodeEntity, EventRef, ParamInfo, RenameRecord
 from tailevents.models.enums import (
     ActionType,
@@ -28,6 +37,14 @@ from tailevents.models.explanation import (
     LocalRelationContext,
     RelationContext,
     RelationContextItem,
+)
+from tailevents.models.graph import (
+    GlobalImpactPath,
+    GlobalImpactPathStep,
+    GraphEdge,
+    GraphNode,
+    GraphSubgraph,
+    GraphSubgraphSummary,
 )
 from tailevents.models.protocols import (
     CacheProtocol,
@@ -111,6 +128,9 @@ __all__ = [
     "CodingTaskServiceProtocol",
     "CodingTaskToolResultRequest",
     "CodeEntity",
+    "DocsSyncRequest",
+    "DocsSyncResponse",
+    "DocsSyncSkippedItem",
     "DocRetrieverProtocol",
     "EditableFileReference",
     "EntityDBProtocol",
@@ -128,8 +148,18 @@ __all__ = [
     "ExplanationStreamError",
     "ExplanationStreamEvent",
     "ExplanationStreamInit",
+    "ExternalDocChunk",
+    "ExternalDocMatch",
+    "ExternalDocSource",
     "ExternalRef",
+    "AuthorizedDocSnapshot",
     "GraphServiceProtocol",
+    "GraphEdge",
+    "GraphNode",
+    "GraphSubgraph",
+    "GraphSubgraphSummary",
+    "GlobalImpactPath",
+    "GlobalImpactPathStep",
     "HistorySource",
     "IndexerProtocol",
     "IndexerResult",

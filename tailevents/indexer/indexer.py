@@ -4,8 +4,9 @@ import ast
 from dataclasses import dataclass
 from typing import Optional
 
-from tailevents.models.event import TailEvent
+from tailevents.models.event import ExternalRef, TailEvent
 from tailevents.models.protocols import CacheProtocol, EntityDBProtocol, IndexerProtocol, RelationStoreProtocol
+from tailevents.storage.version_store import SQLiteVersionStore
 from tailevents.indexer.ast_analyzer import ASTAnalyzer
 from tailevents.indexer.diff_parser import DiffParser
 from tailevents.indexer.entity_extractor import EntityExtractor
@@ -20,6 +21,8 @@ class IndexerResultData:
     entities_modified: list[str]
     entities_deleted: list[str]
     relations_created: list[str]
+    external_refs: list[ExternalRef]
+    graph_changed: bool
     pending: bool
 
 
@@ -31,11 +34,13 @@ class Indexer(IndexerProtocol):
         entity_db: EntityDBProtocol,
         relation_store: RelationStoreProtocol,
         cache: Optional[CacheProtocol] = None,
+        version_store: Optional[SQLiteVersionStore] = None,
         rename_similarity_threshold: float = 0.8,
     ):
         self._entity_db = entity_db
         self._relation_store = relation_store
         self._cache = cache
+        self._version_store = version_store
         self._ast_analyzer = ASTAnalyzer()
         self._diff_parser = DiffParser()
         self._rename_tracker = RenameTracker(
@@ -74,7 +79,7 @@ class Indexer(IndexerProtocol):
         except SyntaxError:
             if enqueue_on_failure:
                 self._pending_queue.add(event)
-            return IndexerResultData([], [], [], [], True)
+            return IndexerResultData([], [], [], [], [], False, True)
 
         inspection = await self._entity_extractor.inspect(source, file_path)
         rename_matches = self._rename_tracker.detect_renames(
@@ -91,10 +96,14 @@ class Indexer(IndexerProtocol):
         known_entities = {
             entity.qualified_name: entity.entity_id for entity in all_entities
         }
+        entity_files = {
+            entity.qualified_name: entity.file_path for entity in all_entities
+        }
         relation_result = await self._relation_extractor.refresh(
             source=source,
             file_path=file_path,
             known_entities=known_entities,
+            entity_files=entity_files,
             source_entity_ids_to_refresh=[
                 entity.entity_id
                 for entity in (
@@ -104,6 +113,26 @@ class Indexer(IndexerProtocol):
             ],
             event_id=event.event_id,
         )
+        external_refs = event.external_refs
+        if not external_refs:
+            external_refs = [
+                ExternalRef(
+                    package=item["package"],
+                    symbol=item["symbol"],
+                    usage_pattern=item["usage_pattern"],
+                    version=None,
+                    doc_uri=None,
+                )
+                for item in self._ast_analyzer.extract_external_refs(
+                    source=source,
+                    file_path=file_path,
+                    known_entities=known_entities,
+                    entity_files=entity_files,
+                )
+            ]
+
+        if relation_result.graph_changed and self._version_store is not None:
+            await self._version_store.bump("graph_version")
 
         await self._invalidate_cache(
             entity_result.created_entity_ids
@@ -120,6 +149,8 @@ class Indexer(IndexerProtocol):
             entities_modified=entity_result.modified_entity_ids,
             entities_deleted=entity_result.deleted_entity_ids,
             relations_created=relation_result.relation_ids,
+            external_refs=external_refs,
+            graph_changed=relation_result.graph_changed,
             pending=False,
         )
 

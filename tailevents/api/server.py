@@ -12,6 +12,7 @@ from tailevents.api.routes import (
     baseline_router,
     coding_capabilities_router,
     coding_router,
+    docs_router,
     entities_router,
     events_router,
     explanations_router,
@@ -58,6 +59,7 @@ def create_app(
     app.include_router(baseline_router, prefix="/api/v1")
     app.include_router(coding_capabilities_router, prefix="/api/v1")
     app.include_router(coding_router, prefix="/api/v1")
+    app.include_router(docs_router, prefix="/api/v1")
     app.include_router(entities_router, prefix="/api/v1")
     app.include_router(explanations_router, prefix="/api/v1")
     app.include_router(profiles_router, prefix="/api/v1")

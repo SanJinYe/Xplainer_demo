@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -23,6 +24,7 @@ const COMMAND_ONBOARD_REPOSITORY = "tailEvents.onboardRepository";
 const COMMAND_OPEN_PANEL = "tailEvents.openPanel";
 const COMMAND_REFRESH_PANEL = "tailEvents.refreshPanel";
 const COMMAND_MANAGE_CODING_PROFILES = "tailEvents.manageCodingProfiles";
+const COMMAND_MANAGE_AUTHORIZED_DOCS = "tailEvents.manageAuthorizedDocs";
 const COMMAND_SELECT_CODE_PROFILE = "tailEvents.selectCodeProfile";
 const COMMAND_SELECT_EXPLAIN_PROFILE = "tailEvents.selectExplainProfile";
 const VIEW_CONTAINER_ID = "tailevents-sidebar";
@@ -32,6 +34,8 @@ const DEFAULT_TIMEOUT_MS = 5000;
 const NO_INDEXED_ENTITY_MESSAGE = "No indexed entity at cursor position.";
 const NO_WORKSPACE_MESSAGE = "Open a workspace folder before running TailEvents onboarding.";
 const NO_ONBOARDING_FILES_MESSAGE = "No candidate Python files found for TailEvents onboarding.";
+const NO_AUTHORIZED_DOCS_MESSAGE = "No README, Markdown, or text files found for docs sync.";
+const AUTHORIZED_DOCS_STATE_KEY = "tailEvents.authorizedDocs";
 
 export function activate(context: vscode.ExtensionContext): void {
     const outputChannel = vscode.window.createOutputChannel("TailEvents");
@@ -284,6 +288,81 @@ export function activate(context: vscode.ExtensionContext): void {
             await profileStateStore.refresh();
             await sidebarProvider.refreshAfterProfileChange({ reloadExplain: true });
         }),
+        vscode.commands.registerCommand(COMMAND_MANAGE_AUTHORIZED_DOCS, async () => {
+            const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
+            if (workspaceFolders.length === 0) {
+                vscode.window.showInformationMessage(NO_WORKSPACE_MESSAGE);
+                return;
+            }
+            if (!apiClient.syncAuthorizedDocs) {
+                vscode.window.showErrorMessage("TailEvents docs sync is not available.");
+                return;
+            }
+
+            const candidates = await collectWorkspaceDocCandidates(workspaceFolders);
+            if (candidates.length === 0) {
+                vscode.window.showInformationMessage(NO_AUTHORIZED_DOCS_MESSAGE);
+                return;
+            }
+
+            const storedSelection = context.workspaceState.get<string[]>(AUTHORIZED_DOCS_STATE_KEY, []);
+            const defaultSelection =
+                storedSelection.length > 0
+                    ? storedSelection
+                    : candidates
+                        .filter((item) => item.workspaceFilePath.toLowerCase() === "readme.md")
+                        .map((item) => item.workspaceFilePath);
+            const quickPick = await vscode.window.showQuickPick(
+                candidates.map((item) => ({
+                    label: item.workspaceFilePath,
+                    picked: defaultSelection.includes(item.workspaceFilePath),
+                })),
+                {
+                    canPickMany: true,
+                    title: "TailEvents: Manage Authorized Docs",
+                },
+            );
+            if (!quickPick) {
+                return;
+            }
+
+            const selectedPaths = quickPick.map((item) => item.label);
+            await context.workspaceState.update(AUTHORIZED_DOCS_STATE_KEY, selectedPaths);
+            const documents = await Promise.all(
+                selectedPaths.map(async (workspaceFilePath) => {
+                    const absolutePath = resolveWorkspaceAbsolutePath(
+                        workspaceFolders,
+                        workspaceFilePath,
+                    );
+                    if (!absolutePath) {
+                        throw new Error(`Missing authorized doc: ${workspaceFilePath}`);
+                    }
+                    const buffer = await readFile(absolutePath);
+                    const content = buffer.toString("utf8");
+                    return {
+                        file_path: workspaceFilePath,
+                        content,
+                        content_hash: createHash("sha256").update(content, "utf8").digest("hex"),
+                    };
+                }),
+            );
+
+            const synced = await apiClient.syncAuthorizedDocs({ documents });
+            if (!synced.ok) {
+                vscode.window.showErrorMessage("TailEvents docs sync failed.");
+                return;
+            }
+
+            apiClient.clearSummaryCache();
+            await profileStateStore.refresh();
+            await sidebarProvider.refreshAfterProfileChange({ reloadExplain: true });
+            const skipped = synced.data.skipped.length;
+            vscode.window.showInformationMessage(
+                skipped > 0
+                    ? `Synced ${synced.data.accepted} docs, skipped ${skipped}.`
+                    : `Synced ${synced.data.accepted} docs.`,
+            );
+        }),
         vscode.commands.registerCommand(COMMAND_SELECT_CODE_PROFILE, async () => {
             await profileManager.showSelectCodeProfileQuickPick();
             await profileStateStore.refresh();
@@ -386,8 +465,54 @@ export function activate(context: vscode.ExtensionContext): void {
         });
     }
 
+    async function collectWorkspaceDocCandidates(
+        workspaceFolders: readonly vscode.WorkspaceFolder[],
+    ) {
+        const collected: Array<{ workspaceFilePath: string; absolutePath: string }> = [];
+        for (const folder of workspaceFolders) {
+            const markdown = await vscode.workspace.findFiles(
+                new vscode.RelativePattern(folder, "**/*.md"),
+            );
+            const textFiles = await vscode.workspace.findFiles(
+                new vscode.RelativePattern(folder, "**/*.txt"),
+            );
+            for (const uri of [...markdown, ...textFiles]) {
+                const workspaceFilePath = path
+                    .relative(folder.uri.fsPath, uri.fsPath)
+                    .replace(/\\/g, "/");
+                if (!workspaceFilePath || workspaceFilePath.startsWith("..")) {
+                    continue;
+                }
+                collected.push({
+                    workspaceFilePath,
+                    absolutePath: uri.fsPath,
+                });
+            }
+        }
+        const deduped = new Map<string, { workspaceFilePath: string; absolutePath: string }>();
+        for (const item of collected) {
+            deduped.set(item.workspaceFilePath, item);
+        }
+        return [...deduped.values()].sort((left, right) => {
+            return left.workspaceFilePath.localeCompare(right.workspaceFilePath);
+        });
+    }
+
 }
 
 export function deactivate(): void {
     return;
+}
+
+function resolveWorkspaceAbsolutePath(
+    workspaceFolders: readonly vscode.WorkspaceFolder[],
+    workspaceFilePath: string,
+): string | null {
+    for (const folder of workspaceFolders) {
+        const candidate = path.join(folder.uri.fsPath, workspaceFilePath);
+        if (existsSync(candidate)) {
+            return candidate;
+        }
+    }
+    return null;
 }

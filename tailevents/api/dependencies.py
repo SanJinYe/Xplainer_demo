@@ -12,11 +12,12 @@ from tailevents.coding import CodingTaskService
 from tailevents.config import Settings, get_settings
 from tailevents.explanation import (
     DocRetriever,
+    DocMetricsTracker,
     ExplanationEngine,
     ExplanationMetricsTracker,
     LLMClientFactory,
 )
-from tailevents.graph import GraphServiceStub
+from tailevents.graph import GraphMetricsTracker, GraphService
 from tailevents.ingestion import GraphUpdateHook, IngestionPipeline
 from tailevents.indexer import Indexer
 from tailevents.models.entity import CodeEntity
@@ -35,6 +36,7 @@ from tailevents.storage import (
     SQLiteEventStore,
     SQLiteRelationStore,
     SQLiteTaskStepStore,
+    SQLiteVersionStore,
     initialize_db,
 )
 
@@ -50,6 +52,7 @@ class AppContainer:
     relation_store: SQLiteRelationStore
     task_store: SQLiteCodingTaskStore
     task_step_store: SQLiteTaskStepStore
+    version_store: SQLiteVersionStore
     cache: ExplanationCache
     indexer: Indexer
     baseline_service: BaselineOnboardingService
@@ -57,7 +60,7 @@ class AppContainer:
     doc_retriever: DocRetrieverProtocol
     explanation_engine: ExplanationEngine
     query_router: QueryRouter
-    graph_service: GraphServiceStub
+    graph_service: GraphService
     ingestion_pipeline: IngestionPipeline
     profile_registry: CodingProfileRegistryProtocol
     coding_task_service: CodingTaskService
@@ -84,6 +87,8 @@ class AppContainer:
         """Aggregate counts for admin observability."""
 
         cache_stats = await self.cache.stats()
+        graph_metrics_getter = getattr(self.graph_service, "get_metrics", None)
+        doc_metrics_getter = getattr(self.doc_retriever, "get_metrics", None)
         return {
             "entity_count": len(
                 [entity for entity in await self.entity_db.get_all() if not entity.is_deleted]
@@ -91,6 +96,10 @@ class AppContainer:
             "event_count": await self.event_store.count(),
             "relation_count": len(await self.relation_store.get_all_active()),
             "explanation_metrics": self.explanation_engine.get_metrics(),
+            "graph_metrics": graph_metrics_getter() if callable(graph_metrics_getter) else {},
+            "doc_metrics": doc_metrics_getter() if callable(doc_metrics_getter) else {},
+            "graph_version": await self.version_store.get("graph_version"),
+            "docs_version": await self.version_store.get("docs_version"),
             **cache_stats,
         }
 
@@ -99,6 +108,15 @@ class AppContainer:
 
         await self.cache.clear_all()
         self.explanation_engine.reset_metrics()
+        reset_graph_metrics = getattr(self.graph_service, "reset_metrics", None)
+        if callable(reset_graph_metrics):
+            reset_graph_metrics()
+        reset_doc_metrics = getattr(self.doc_retriever, "reset_metrics", None)
+        if callable(reset_doc_metrics):
+            reset_doc_metrics()
+        clear_doc_caches = getattr(self.doc_retriever, "clear_caches", None)
+        if callable(clear_doc_caches):
+            clear_doc_caches()
         return await self.cache.stats()
 
     async def reset_state(self) -> dict[str, int]:
@@ -121,6 +139,10 @@ class AppContainer:
                 DELETE FROM entities;
                 DELETE FROM explanation_cache;
                 DELETE FROM events;
+                DELETE FROM authorized_docs;
+                DELETE FROM doc_chunks;
+                DELETE FROM doc_search;
+                DELETE FROM system_state;
                 """
             )
             await connection.commit()
@@ -128,6 +150,10 @@ class AppContainer:
         self.indexer.pending_queue.clear()
         self.cache.reset_metrics()
         self.explanation_engine.reset_metrics()
+        clear_doc_caches = getattr(self.doc_retriever, "clear_caches", None)
+        if callable(clear_doc_caches):
+            clear_doc_caches()
+        await self.version_store.ensure_defaults(["graph_version", "docs_version"])
 
         return {
             "events_deleted": event_count,
@@ -229,23 +255,39 @@ def build_lifespan(
         relation_store = SQLiteRelationStore(db_manager)
         task_store = SQLiteCodingTaskStore(db_manager)
         task_step_store = SQLiteTaskStepStore(db_manager)
+        version_store = SQLiteVersionStore(db_manager)
+        await version_store.ensure_defaults(["graph_version", "docs_version"])
         cache = ExplanationCache(db_manager)
         explanation_telemetry = ExplanationMetricsTracker()
+        graph_telemetry = GraphMetricsTracker()
+        doc_telemetry = DocMetricsTracker()
         indexer = Indexer(
             entity_db=entity_db,
             relation_store=relation_store,
             cache=cache,
+            version_store=version_store,
             rename_similarity_threshold=app_settings.rename_similarity_threshold,
         )
         active_llm_client = llm_client or LLMClientFactory.create(app_settings)
-        active_doc_retriever = doc_retriever or DocRetriever()
+        graph_service = GraphService(
+            entity_db=entity_db,
+            relation_store=relation_store,
+            telemetry=graph_telemetry,
+        )
+        active_doc_retriever = doc_retriever or DocRetriever(
+            database=db_manager,
+            version_store=version_store,
+            telemetry=doc_telemetry,
+        )
         profile_registry = InMemoryCodingProfileRegistry(app_settings)
         explanation_engine = ExplanationEngine(
             entity_db=entity_db,
             event_store=event_store,
             relation_store=relation_store,
+            graph_service=graph_service,
             cache=cache,
             doc_retriever=active_doc_retriever,
+            version_store=version_store,
             profile_registry=profile_registry,
             llm_client=active_llm_client,
             max_events=app_settings.explanation_max_events,
@@ -264,7 +306,6 @@ def build_lifespan(
             entity_db=entity_db,
             explanation_engine=explanation_engine,
         )
-        graph_service = GraphServiceStub()
         ingestion_pipeline = IngestionPipeline(
             event_store=event_store,
             indexer=indexer,
@@ -290,6 +331,7 @@ def build_lifespan(
             relation_store=relation_store,
             task_store=task_store,
             task_step_store=task_step_store,
+            version_store=version_store,
             cache=cache,
             indexer=indexer,
             baseline_service=baseline_service,
@@ -388,7 +430,7 @@ def get_query_router(
 
 def get_graph_service(
     container: AppContainer = Depends(get_container),
-) -> GraphServiceStub:
+) -> GraphService:
     return container.graph_service
 
 

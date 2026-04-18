@@ -109,6 +109,43 @@ CREATE TABLE IF NOT EXISTS explanation_cache (
 );
 """
 
+SYSTEM_STATE_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS system_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+"""
+
+AUTHORIZED_DOCS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS authorized_docs (
+    file_path TEXT PRIMARY KEY,
+    content_hash TEXT NOT NULL,
+    content TEXT NOT NULL
+);
+"""
+
+DOC_CHUNKS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS doc_chunks (
+    chunk_id TEXT PRIMARY KEY,
+    file_path TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    content TEXT NOT NULL
+);
+"""
+
+DOC_CHUNKS_INDEXES_SQL = """
+CREATE INDEX IF NOT EXISTS idx_doc_chunks_file_path ON doc_chunks(file_path);
+"""
+
+DOC_SEARCH_SQL = """
+CREATE VIRTUAL TABLE IF NOT EXISTS doc_search USING fts5(
+    chunk_id UNINDEXED,
+    file_path,
+    content
+);
+"""
+
 CODING_TASKS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS coding_tasks (
     task_id TEXT PRIMARY KEY,
@@ -172,6 +209,11 @@ SCHEMA_SQL = "\n".join(
         RELATIONS_TABLE_SQL,
         RELATIONS_INDEXES_SQL,
         EXPLANATION_CACHE_TABLE_SQL,
+        SYSTEM_STATE_TABLE_SQL,
+        AUTHORIZED_DOCS_TABLE_SQL,
+        DOC_CHUNKS_TABLE_SQL,
+        DOC_CHUNKS_INDEXES_SQL,
+        DOC_SEARCH_SQL,
         CODING_TASKS_TABLE_SQL,
         CODING_TASKS_INDEXES_SQL,
         TASK_STEP_EVENTS_TABLE_SQL,
@@ -200,6 +242,7 @@ async def run_migrations(connection: aiosqlite.Connection) -> None:
 
     await connection.executescript(SCHEMA_SQL)
     await _ensure_coding_task_columns(connection)
+    await _ensure_system_state_defaults(connection)
     await connection.commit()
 
 
@@ -215,19 +258,36 @@ async def _ensure_coding_task_columns(connection: aiosqlite.Connection) -> None:
         await connection.execute(statement)
 
 
+async def _ensure_system_state_defaults(connection: aiosqlite.Connection) -> None:
+    for key in ("graph_version", "docs_version"):
+        await connection.execute(
+            """
+            INSERT INTO system_state (key, value)
+            VALUES (?, '0')
+            ON CONFLICT(key) DO NOTHING
+            """,
+            (key,),
+        )
+
+
 __all__ = [
     "ENTITY_SEARCH_SQL",
     "ENTITIES_INDEXES_SQL",
     "ENTITIES_TABLE_SQL",
     "EVENTS_INDEXES_SQL",
     "EVENTS_TABLE_SQL",
+    "AUTHORIZED_DOCS_TABLE_SQL",
     "CODING_TASKS_INDEXES_SQL",
     "CODING_TASKS_TABLE_SQL",
+    "DOC_CHUNKS_INDEXES_SQL",
+    "DOC_CHUNKS_TABLE_SQL",
+    "DOC_SEARCH_SQL",
     "EXPLANATION_CACHE_TABLE_SQL",
     "TASK_STEP_EVENTS_INDEXES_SQL",
     "TASK_STEP_EVENTS_TABLE_SQL",
     "RELATIONS_INDEXES_SQL",
     "RELATIONS_TABLE_SQL",
     "SCHEMA_SQL",
+    "SYSTEM_STATE_TABLE_SQL",
     "run_migrations",
 ]

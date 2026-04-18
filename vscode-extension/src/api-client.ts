@@ -1,6 +1,8 @@
 import {
     type ApiErrorCategory,
     type ApiResult,
+    type DocsSyncRequestPayload,
+    type DocsSyncResponsePayload,
     type BaselineOnboardFilePayload,
     type BaselineOnboardFileResult,
     type BackendCodingCapabilitiesResponse,
@@ -142,6 +144,10 @@ export interface TailEventsApi {
         taskId: string,
         signal?: AbortSignal,
     ): Promise<ApiResult<null>>;
+    syncAuthorizedDocs?(
+        payload: DocsSyncRequestPayload,
+        signal?: AbortSignal,
+    ): Promise<ApiResult<DocsSyncResponsePayload>>;
     runCodingTaskSession(
         payload: CodingTaskCreateRequestPayload,
         handlers: CodingTaskSessionHandlers,
@@ -423,6 +429,21 @@ export class TailEventsApiClient implements TailEventsApi {
             signal,
             {
                 method: "POST",
+            },
+        );
+    }
+
+    public async syncAuthorizedDocs(
+        payload: DocsSyncRequestPayload,
+        signal?: AbortSignal,
+    ): Promise<ApiResult<DocsSyncResponsePayload>> {
+        return this.requestJson<DocsSyncResponsePayload>(
+            "/docs/sync",
+            undefined,
+            signal,
+            {
+                method: "POST",
+                body: payload,
             },
         );
     }

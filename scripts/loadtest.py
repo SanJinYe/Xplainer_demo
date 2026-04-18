@@ -34,7 +34,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--scenario",
-        choices=["ingest", "summary", "hot-cache-explain", "mixed-workload"],
+        choices=["ingest", "summary", "impact-paths", "hot-cache-explain", "mixed-workload"],
         required=True,
         help="Load test scenario to run.",
     )
@@ -695,6 +695,17 @@ async def run_summary_request(
     return build_response_result(response, operation="summary", from_cache=from_cache)
 
 
+async def run_impact_paths_request(
+    client: httpx.AsyncClient,
+    entity_id: str,
+) -> dict[str, Any]:
+    response = await client.get(
+        f"relations/{entity_id}/impact-paths",
+        params={"direction": "both", "limit": 3},
+    )
+    return build_response_result(response, operation="impact-paths")
+
+
 async def run_entity_search_request(
     client: httpx.AsyncClient,
     query: str,
@@ -734,6 +745,11 @@ async def run_scenario(
                         raise RuntimeError("summary scenario missing entity_ids payload")
                     entity_ids = payload["entity_ids"]
                     result = await run_summary_request(client, entity_ids[index])
+                elif scenario == "impact-paths":
+                    if payload is None:
+                        raise RuntimeError("impact-paths scenario missing entity_ids payload")
+                    entity_ids = payload["entity_ids"]
+                    result = await run_impact_paths_request(client, entity_ids[index])
                 else:
                     if payload is None:
                         raise RuntimeError("scenario payload is missing")
@@ -743,6 +759,8 @@ async def run_scenario(
                     operation = "ingest"
                 elif scenario == "summary":
                     operation = "summary"
+                elif scenario == "impact-paths":
+                    operation = "impact-paths"
                 else:
                     operation = "explain"
                 result = build_failed_result(operation=operation, error=str(exc))
@@ -1010,6 +1028,10 @@ async def async_main() -> None:
             else:
                 scenario_payload: Optional[dict[str, Any]] = None
                 if args.scenario == "summary":
+                    target_count = max(args.seed_count, args.requests)
+                    setup = await seed_summary_targets(client, target_count)
+                    scenario_payload = setup
+                elif args.scenario == "impact-paths":
                     target_count = max(args.seed_count, args.requests)
                     setup = await seed_summary_targets(client, target_count)
                     scenario_payload = setup

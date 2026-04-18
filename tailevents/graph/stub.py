@@ -21,6 +21,17 @@ class GraphServiceStub(GraphServiceProtocol):
             "implemented": False,
         }
 
+    async def get_impact_paths(
+        self,
+        entity_id: str,
+        direction: str = "both",
+        limit: int = 3,
+    ) -> list[dict]:
+        _ = entity_id
+        _ = direction
+        _ = limit
+        return []
+
     async def get_isolated_entities(self) -> list[str]:
         """Return no isolated entities.
 

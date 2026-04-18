@@ -4,7 +4,7 @@ import ast
 import hashlib
 from typing import Any, Optional
 
-from tailevents.models.enums import RelationType
+from tailevents.models.enums import RelationType, UsagePattern
 
 
 class ASTAnalyzer:
@@ -20,19 +20,46 @@ class ASTAnalyzer:
         return extractor.entities
 
     def extract_relations(
-        self, source: str, file_path: str, known_entities: dict[str, str]
+        self,
+        source: str,
+        file_path: str,
+        known_entities: dict[str, str],
+        entity_files: Optional[dict[str, str]] = None,
     ) -> list[dict[str, str]]:
         tree = self._parse(source)
         if tree is None:
             return []
 
         extractor = _RelationExtractor(
+            tree=tree,
             source=source,
             file_path=file_path,
             known_entities=known_entities,
+            entity_files=entity_files or {},
         )
         extractor.visit(tree)
         return extractor.relations
+
+    def extract_external_refs(
+        self,
+        source: str,
+        file_path: str,
+        known_entities: dict[str, str],
+        entity_files: Optional[dict[str, str]] = None,
+    ) -> list[dict[str, str]]:
+        tree = self._parse(source)
+        if tree is None:
+            return []
+
+        extractor = _ExternalRefExtractor(
+            tree=tree,
+            source=source,
+            file_path=file_path,
+            known_entities=known_entities,
+            entity_files=entity_files or {},
+        )
+        extractor.visit(tree)
+        return extractor.external_refs
 
     def extract_imports(self, source: str) -> list[dict[str, Optional[str]]]:
         tree = self._parse(source)
@@ -230,24 +257,47 @@ class _EntityExtractor(ast.NodeVisitor):
         return params
 
 
-class _RelationExtractor(ast.NodeVisitor):
-    def __init__(self, source: str, file_path: str, known_entities: dict[str, str]):
+class _ResolutionVisitor(ast.NodeVisitor):
+    def __init__(
+        self,
+        *,
+        tree: ast.AST,
+        source: str,
+        file_path: str,
+        known_entities: dict[str, str],
+        entity_files: dict[str, str],
+    ):
         self._source = source
         self._file_path = file_path
         self._known_entities = known_entities
+        self._entity_files = entity_files
         self._entity_stack: list[str] = []
         self._container_stack: list[tuple[str, str]] = []
         self._class_stack: list[str] = []
         self._name_index = self._build_name_index(known_entities)
+        self._same_file_index = self._build_file_name_index(entity_files, file_path)
+        self._workspace_modules = self._build_workspace_modules(entity_files)
+        self._import_aliases = self._build_import_aliases(tree)
         self._seen: set[tuple[str, str, str]] = set()
-        self.relations: list[dict[str, str]] = []
+
+    def _build_import_aliases(self, tree: ast.AST) -> dict[str, str]:
+        aliases: dict[str, str] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    local_name = alias.asname or alias.name.split(".", 1)[0]
+                    aliases[local_name] = alias.name
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                for alias in node.names:
+                    if alias.name == "*":
+                        continue
+                    qualified_name = alias.name if not module else f"{module}.{alias.name}"
+                    aliases[alias.asname or alias.name] = qualified_name
+        return aliases
 
     def visit_ClassDef(self, node: ast.ClassDef) -> Any:
         qualified_name = self._qualified_name(node.name)
-        for base in node.bases:
-            target_qname = self._resolve_target(ast.unparse(base), current_class=qualified_name)
-            if target_qname is not None:
-                self._add_relation(qualified_name, target_qname, RelationType.INHERITS.value)
         self._entity_stack.append(qualified_name)
         self._container_stack.append((node.name, "class"))
         self._class_stack.append(qualified_name)
@@ -261,6 +311,160 @@ class _RelationExtractor(ast.NodeVisitor):
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> Any:
         self._visit_function(node.name, node)
+
+    def _visit_function(self, name: str, node: ast.AST) -> None:
+        qualified_name = self._qualified_name(name)
+        self._entity_stack.append(qualified_name)
+        kind = "method" if self._container_stack and self._container_stack[-1][1] == "class" else "function"
+        self._container_stack.append((name, kind))
+        self.generic_visit(node)
+        self._container_stack.pop()
+        self._entity_stack.pop()
+
+    def _qualified_name(self, name: str) -> str:
+        if not self._container_stack:
+            return name
+        return ".".join([part[0] for part in self._container_stack] + [name])
+
+    def _expr_name(self, node: ast.AST) -> str:
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            base = self._expr_name(node.value)
+            return node.attr if not base else f"{base}.{node.attr}"
+        return ""
+
+    def _normalize_import_alias(self, raw_name: str) -> str:
+        if not raw_name:
+            return raw_name
+        head, _, tail = raw_name.partition(".")
+        mapped = self._import_aliases.get(head)
+        if mapped is None:
+            return raw_name
+        return mapped if not tail else f"{mapped}.{tail}"
+
+    def _resolve_target(
+        self, raw_name: str, current_class: Optional[str]
+    ) -> Optional[str]:
+        if not raw_name:
+            return None
+        if raw_name in self._known_entities:
+            return raw_name
+
+        if raw_name.startswith("self.") and current_class is not None:
+            candidate = f"{current_class}.{raw_name.split('.', 1)[1]}"
+            if candidate in self._known_entities:
+                return candidate
+            method_candidate = f"{current_class}.{raw_name.rsplit('.', 1)[-1]}"
+            if method_candidate in self._known_entities:
+                return method_candidate
+
+        normalized_name = self._normalize_import_alias(raw_name)
+        if normalized_name != raw_name:
+            if normalized_name in self._known_entities:
+                return normalized_name
+            alias_short_name = normalized_name.rsplit(".", 1)[-1]
+            alias_candidate = self._name_index.get(alias_short_name)
+            if alias_candidate is not None:
+                return alias_candidate
+
+        short_name = raw_name.rsplit(".", 1)[-1]
+        file_candidate = self._same_file_index.get(short_name)
+        if file_candidate is not None:
+            return file_candidate
+
+        candidate = self._name_index.get(short_name)
+        if candidate is not None:
+            return candidate
+        return None
+
+    def _build_name_index(self, known_entities: dict[str, str]) -> dict[str, Optional[str]]:
+        index: dict[str, Optional[str]] = {}
+        for qualified_name in known_entities:
+            short_name = qualified_name.rsplit(".", 1)[-1]
+            if short_name not in index:
+                index[short_name] = qualified_name
+            elif index[short_name] != qualified_name:
+                index[short_name] = None
+        return index
+
+    def _build_file_name_index(
+        self,
+        entity_files: dict[str, str],
+        file_path: str,
+    ) -> dict[str, Optional[str]]:
+        index: dict[str, Optional[str]] = {}
+        for qualified_name, candidate_file_path in entity_files.items():
+            if candidate_file_path != file_path:
+                continue
+            short_name = qualified_name.rsplit(".", 1)[-1]
+            if short_name not in index:
+                index[short_name] = qualified_name
+            elif index[short_name] != qualified_name:
+                index[short_name] = None
+        return index
+
+    def _build_workspace_modules(self, entity_files: dict[str, str]) -> set[str]:
+        modules: set[str] = set()
+        for file_path in entity_files.values():
+            normalized = file_path.replace("\\", "/")
+            if not normalized.endswith(".py"):
+                continue
+            stem = normalized[:-3]
+            parts = [part for part in stem.split("/") if part]
+            if not parts:
+                continue
+            if parts[-1] == "__init__":
+                parts = parts[:-1]
+            if not parts:
+                continue
+            module_name = ".".join(parts)
+            modules.add(module_name)
+            for index in range(1, len(parts)):
+                modules.add(".".join(parts[:index]))
+        return modules
+
+    def _is_workspace_module(self, qualified_name: str) -> bool:
+        parts = qualified_name.split(".")
+        for index in range(len(parts), 0, -1):
+            candidate = ".".join(parts[:index])
+            if candidate in self._workspace_modules:
+                return True
+        return False
+
+    def _add_relation(self, source_qname: str, target_qname: str, relation_type: str) -> None:
+        raise NotImplementedError
+
+
+class _RelationExtractor(_ResolutionVisitor):
+    def __init__(
+        self,
+        *,
+        tree: ast.AST,
+        source: str,
+        file_path: str,
+        known_entities: dict[str, str],
+        entity_files: dict[str, str],
+    ):
+        super().__init__(
+            tree=tree,
+            source=source,
+            file_path=file_path,
+            known_entities=known_entities,
+            entity_files=entity_files,
+        )
+        self.relations: list[dict[str, str]] = []
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> Any:
+        qualified_name = self._qualified_name(node.name)
+        for base in node.bases:
+            target_qname = self._resolve_target(
+                ast.unparse(base),
+                current_class=qualified_name,
+            )
+            if target_qname is not None:
+                self._add_relation(qualified_name, target_qname, RelationType.INHERITS.value)
+        super().visit_ClassDef(node)
 
     def visit_Call(self, node: ast.Call) -> Any:
         if self._entity_stack:
@@ -309,57 +513,7 @@ class _RelationExtractor(ast.NodeVisitor):
                 qualified_name,
                 RelationType.COMPOSED_OF.value,
             )
-        self._entity_stack.append(qualified_name)
-        kind = "method" if self._container_stack and self._container_stack[-1][1] == "class" else "function"
-        self._container_stack.append((name, kind))
-        self.generic_visit(node)
-        self._container_stack.pop()
-        self._entity_stack.pop()
-
-    def _qualified_name(self, name: str) -> str:
-        if not self._container_stack:
-            return name
-        return ".".join([part[0] for part in self._container_stack] + [name])
-
-    def _expr_name(self, node: ast.AST) -> str:
-        if isinstance(node, ast.Name):
-            return node.id
-        if isinstance(node, ast.Attribute):
-            base = self._expr_name(node.value)
-            return node.attr if not base else f"{base}.{node.attr}"
-        return ""
-
-    def _resolve_target(
-        self, raw_name: str, current_class: Optional[str]
-    ) -> Optional[str]:
-        if not raw_name:
-            return None
-        if raw_name in self._known_entities:
-            return raw_name
-
-        if raw_name.startswith("self.") and current_class is not None:
-            candidate = f"{current_class}.{raw_name.split('.', 1)[1]}"
-            if candidate in self._known_entities:
-                return candidate
-            method_candidate = f"{current_class}.{raw_name.rsplit('.', 1)[-1]}"
-            if method_candidate in self._known_entities:
-                return method_candidate
-
-        short_name = raw_name.rsplit(".", 1)[-1]
-        candidate = self._name_index.get(short_name)
-        if candidate is not None:
-            return candidate
-        return None
-
-    def _build_name_index(self, known_entities: dict[str, str]) -> dict[str, Optional[str]]:
-        index: dict[str, Optional[str]] = {}
-        for qualified_name in known_entities:
-            short_name = qualified_name.rsplit(".", 1)[-1]
-            if short_name not in index:
-                index[short_name] = qualified_name
-            elif index[short_name] != qualified_name:
-                index[short_name] = None
-        return index
+        super()._visit_function(name, node)
 
     def _add_relation(self, source_qname: str, target_qname: str, relation_type: str) -> None:
         key = (source_qname, target_qname, relation_type)
@@ -373,6 +527,96 @@ class _RelationExtractor(ast.NodeVisitor):
                 "relation_type": relation_type,
             }
         )
+
+
+class _ExternalRefExtractor(_ResolutionVisitor):
+    def __init__(
+        self,
+        *,
+        tree: ast.AST,
+        source: str,
+        file_path: str,
+        known_entities: dict[str, str],
+        entity_files: dict[str, str],
+    ):
+        super().__init__(
+            tree=tree,
+            source=source,
+            file_path=file_path,
+            known_entities=known_entities,
+            entity_files=entity_files,
+        )
+        self.external_refs: list[dict[str, str]] = []
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> Any:
+        qualified_name = self._qualified_name(node.name)
+        for base in node.bases:
+            external_ref = self._build_external_ref(
+                raw_name=ast.unparse(base),
+                usage_pattern=UsagePattern.INHERITANCE.value,
+                current_class=qualified_name,
+            )
+            if external_ref is not None:
+                self._add_external_ref(external_ref)
+        super().visit_ClassDef(node)
+
+    def visit_Call(self, node: ast.Call) -> Any:
+        external_ref = self._build_external_ref(
+            raw_name=self._expr_name(node.func),
+            usage_pattern=UsagePattern.DIRECT_CALL.value,
+            current_class=self._class_stack[-1] if self._class_stack else None,
+        )
+        if external_ref is not None:
+            self._add_external_ref(external_ref)
+        self.generic_visit(node)
+
+    def _build_external_ref(
+        self,
+        *,
+        raw_name: str,
+        usage_pattern: str,
+        current_class: Optional[str],
+    ) -> Optional[dict[str, str]]:
+        if not raw_name or raw_name.startswith("self."):
+            return None
+        if self._resolve_target(raw_name, current_class=current_class) is not None:
+            return None
+
+        normalized_name = self._normalize_import_alias(raw_name)
+        if normalized_name == raw_name and "." not in raw_name:
+            return None
+        if self._is_workspace_module(normalized_name):
+            return None
+
+        parts = normalized_name.split(".")
+        if len(parts) < 2:
+            return None
+
+        package = parts[0]
+        symbol = parts[-1]
+        if not package or not symbol:
+            return None
+        return {
+            "package": package,
+            "symbol": symbol,
+            "usage_pattern": usage_pattern,
+        }
+
+    def _add_external_ref(self, external_ref: dict[str, str]) -> None:
+        key = (
+            external_ref["package"],
+            external_ref["symbol"],
+            external_ref["usage_pattern"],
+        )
+        if key in self._seen:
+            return
+        self._seen.add(key)
+        self.external_refs.append(external_ref)
+
+    def _add_relation(self, source_qname: str, target_qname: str, relation_type: str) -> None:
+        _ = source_qname
+        _ = target_qname
+        _ = relation_type
 
 
 __all__ = ["ASTAnalyzer"]

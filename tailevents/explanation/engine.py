@@ -19,9 +19,11 @@ from tailevents.explanation.prompts import (
     SYSTEM_PROMPT,
 )
 from tailevents.explanation.telemetry import ExplanationMetricsTracker
+from tailevents.graph.stub import GraphServiceStub
+from tailevents.models.docs import ExternalDocChunk, ExternalDocMatch, ExternalDocSource
 from tailevents.models.entity import CodeEntity
 from tailevents.models.enums import ActionType, EntityType, RelationType
-from tailevents.models.event import ExternalRef, TailEvent
+from tailevents.models.event import TailEvent
 from tailevents.models.explanation import (
     EntityExplanation,
     ExplanationStreamDelta,
@@ -34,6 +36,7 @@ from tailevents.models.explanation import (
     RelationContext,
     RelationContextItem,
 )
+from tailevents.models.graph import GraphSubgraphSummary
 from tailevents.models.profile import ResolvedCodingProfile
 from tailevents.models.protocols import (
     CacheProtocol,
@@ -42,9 +45,11 @@ from tailevents.models.protocols import (
     EntityDBProtocol,
     EventStoreProtocol,
     ExplanationEngineProtocol,
+    GraphServiceProtocol,
     LLMClientProtocol,
     RelationStoreProtocol,
 )
+from tailevents.storage.version_store import SQLiteVersionStore
 
 
 @dataclass
@@ -55,7 +60,7 @@ class _PreparedExplanation:
     history_source: HistorySource
     relation_context: RelationContext
     related_entities: list[dict]
-    doc_snippets: list[dict]
+    doc_snippets: list[ExternalDocMatch]
     user_prompt: str
 
 
@@ -122,6 +127,8 @@ class ExplanationEngine(ExplanationEngineProtocol):
         relation_store: RelationStoreProtocol,
         cache: Optional[CacheProtocol],
         doc_retriever: DocRetrieverProtocol,
+        graph_service: Optional[GraphServiceProtocol] = None,
+        version_store: Optional[SQLiteVersionStore] = None,
         profile_registry: Optional[CodingProfileRegistryProtocol] = None,
         llm_client: Optional[LLMClientProtocol] = None,
         context_assembler: Optional[ContextAssembler] = None,
@@ -141,10 +148,12 @@ class ExplanationEngine(ExplanationEngineProtocol):
         self._entity_db = entity_db
         self._event_store = event_store
         self._relation_store = relation_store
+        self._graph_service = graph_service or GraphServiceStub()
         self._cache = cache
         self._profile_registry = profile_registry
         self._default_llm_client = llm_client
         self._doc_retriever = doc_retriever
+        self._version_store = version_store
         self._context_assembler = context_assembler or ContextAssembler()
         self._formatter = formatter or ExplanationFormatter()
         self._max_events = max_events
@@ -200,7 +209,7 @@ class ExplanationEngine(ExplanationEngineProtocol):
         saw_error = False
         resolved_profile = self._resolve_profile(profile_id)
 
-        cache_key = self._build_cache_key(
+        cache_key = await self._build_cache_key(
             entity_id,
             "detailed",
             include_relations,
@@ -333,7 +342,7 @@ class ExplanationEngine(ExplanationEngineProtocol):
         include_relations: bool,
         resolved_profile: ResolvedCodingProfile,
     ) -> EntityExplanation:
-        cache_key = self._build_cache_key(
+        cache_key = await self._build_cache_key(
             entity_id,
             "detailed",
             include_relations,
@@ -358,7 +367,7 @@ class ExplanationEngine(ExplanationEngineProtocol):
         include_relations: bool,
         resolved_profile: ResolvedCodingProfile,
     ) -> EntityExplanation:
-        cache_key = self._build_cache_key(
+        cache_key = await self._build_cache_key(
             entity_id,
             detail_level,
             include_relations,
@@ -405,7 +414,7 @@ class ExplanationEngine(ExplanationEngineProtocol):
         include_relations: bool,
         resolved_profile: ResolvedCodingProfile,
     ) -> _DetailedStreamSession:
-        cache_key = self._build_cache_key(
+        cache_key = await self._build_cache_key(
             entity_id,
             "detailed",
             include_relations,
@@ -647,8 +656,8 @@ class ExplanationEngine(ExplanationEngineProtocol):
             return "mixed"
         return "traced_only"
 
-    async def _load_doc_snippets(self, events: list[TailEvent]) -> list[dict]:
-        snippets: list[dict] = []
+    async def _load_doc_snippets(self, events: list[TailEvent]) -> list[ExternalDocMatch]:
+        snippets: list[ExternalDocMatch] = []
         seen: set[tuple[str, str]] = set()
 
         for event in events:
@@ -657,13 +666,43 @@ class ExplanationEngine(ExplanationEngineProtocol):
                 if dedupe_key in seen:
                     continue
                 seen.add(dedupe_key)
-                snippet = await self._doc_retriever.retrieve(
+                matches = await self._doc_retriever.retrieve(
                     external_ref.package,
                     external_ref.symbol,
                 )
-                if snippet is None:
+                if matches is None:
                     continue
-                snippets.append(self._external_ref_to_dict(external_ref, snippet))
+                if isinstance(matches, str):
+                    matches = [
+                        ExternalDocMatch(
+                            source=ExternalDocSource(
+                                kind="pydoc",
+                                package=external_ref.package,
+                                symbol=external_ref.symbol,
+                                doc_uri=external_ref.doc_uri,
+                            ),
+                            chunk=ExternalDocChunk(
+                                chunk_id=f"legacy:{external_ref.package}:{external_ref.symbol}",
+                                content=matches,
+                            ),
+                            usage_pattern=external_ref.usage_pattern.value,
+                            version=external_ref.version,
+                        )
+                    ]
+                for match in matches:
+                    snippets.append(
+                        match.model_copy(
+                            update={
+                                "usage_pattern": external_ref.usage_pattern.value,
+                                "version": external_ref.version,
+                                "source": match.source.model_copy(
+                                    update={"doc_uri": external_ref.doc_uri}
+                                ),
+                            }
+                        )
+                    )
+                    if len(snippets) >= 2:
+                        return snippets
 
         return snippets
 
@@ -699,6 +738,27 @@ class ExplanationEngine(ExplanationEngineProtocol):
             allowed_type=RelationType.COMPOSED_OF,
             limit=None,
         )
+        global_paths = await self._graph_service.get_impact_paths(
+            entity_id,
+            direction="both",
+            limit=3,
+        )
+        subgraph = await self._graph_service.get_subgraph(entity_id, depth=2)
+        global_subgraph = None
+        if hasattr(subgraph, "depth") and hasattr(subgraph, "nodes") and hasattr(subgraph, "edges"):
+            global_subgraph = GraphSubgraphSummary(
+                depth=subgraph.depth,
+                node_count=len(subgraph.nodes),
+                edge_count=len(subgraph.edges),
+                truncated=bool(getattr(subgraph, "truncated", False)),
+                relation_types=sorted(
+                    {
+                        edge.relation_type
+                        for edge in subgraph.edges
+                        if hasattr(edge, "relation_type")
+                    }
+                ),
+            )
 
         return RelationContext(
             local=LocalRelationContext(
@@ -706,7 +766,11 @@ class ExplanationEngine(ExplanationEngineProtocol):
                 callees=callees,
                 containers=containers,
                 members=members,
-            )
+            ),
+            global_={
+                "paths": global_paths or None,
+                "subgraph": global_subgraph,
+            },
         )
 
     async def _load_relation_items(
@@ -805,7 +869,7 @@ class ExplanationEngine(ExplanationEngineProtocol):
         self,
         detail_level: str,
         context: str,
-        doc_snippets: list[dict],
+        doc_snippets: list[ExternalDocMatch],
         baseline_only: bool,
     ) -> str:
         prompt = PROMPT_TEMPLATES[detail_level].format(context=context)
@@ -858,34 +922,30 @@ class ExplanationEngine(ExplanationEngineProtocol):
             return None
         return events[0].intent
 
-    def _external_ref_to_dict(self, external_ref: ExternalRef, snippet: str) -> dict:
-        return {
-            "package": external_ref.package,
-            "symbol": external_ref.symbol,
-            "version": external_ref.version,
-            "doc_uri": external_ref.doc_uri,
-            "usage_pattern": external_ref.usage_pattern.value,
-            "snippet": snippet,
-        }
-
-    def _format_external_context(self, doc_snippets: list[dict]) -> str:
+    def _format_external_context(self, doc_snippets: list[ExternalDocMatch]) -> str:
         lines: list[str] = []
         for snippet in doc_snippets:
-            lines.append(f"{snippet['package']}.{snippet['symbol']}")
-            lines.append(snippet["snippet"])
+            lines.append(f"{snippet.source.package}.{snippet.source.symbol}")
+            lines.append(snippet.chunk.content)
         return "\n".join(lines)
 
-    def _build_cache_key(
+    async def _build_cache_key(
         self,
         entity_id: str,
         detail_level: str,
         include_relations: bool,
         resolved_profile: ResolvedCodingProfile,
     ) -> str:
+        graph_version = 0
+        docs_version = 0
+        if self._version_store is not None:
+            graph_version = await self._version_store.get("graph_version")
+            docs_version = await self._version_store.get("docs_version")
         return (
             f"explain:{entity_id}:{detail_level}:{int(include_relations)}:"
             f"{EXPLANATION_PROMPT_VERSION}:{resolved_profile.resolved_profile_id}:"
-            f"{self._model_profile(detail_level, resolved_profile)}"
+            f"{self._model_profile(detail_level, resolved_profile)}:"
+            f"{graph_version}:{docs_version}"
         )
 
     def _model_profile(
@@ -971,7 +1031,7 @@ class ExplanationEngine(ExplanationEngineProtocol):
         history_source: HistorySource,
         relation_context: RelationContext,
         related_entities: list[dict],
-        doc_snippets: list[dict],
+        doc_snippets: list[ExternalDocMatch],
         raw_output: str,
         detail_level: str,
         resolved_profile: ResolvedCodingProfile,

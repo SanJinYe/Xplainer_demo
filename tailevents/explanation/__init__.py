@@ -1,7 +1,7 @@
 """Public explanation module exports."""
 
 from tailevents.explanation.context_assembler import ContextAssembler
-from tailevents.explanation.doc_retriever import DocRetriever
+from tailevents.explanation.doc_retriever import DocMetricsTracker, DocRetriever
 from tailevents.explanation.engine import ExplanationEngine
 from tailevents.explanation.exceptions import (
     EntityExplanationNotFoundError,
@@ -23,6 +23,7 @@ from tailevents.explanation.telemetry import ExplanationMetricsTracker
 __all__ = [
     "ClaudeLLMClient",
     "ContextAssembler",
+    "DocMetricsTracker",
     "DocRetriever",
     "EntityExplanationNotFoundError",
     "EXPLANATION_PROMPT_VERSION",

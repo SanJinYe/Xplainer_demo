@@ -7,6 +7,8 @@ It records structured change events, maps them to code entities with AST indexin
 - fast summaries for hover
 - streamed detailed explanations for the sidebar
 - baseline-aware history provenance and structured caller/callee context
+- typed global impact paths plus bounded subgraph summaries in detailed explanations
+- dual-source external doc retrieval for explanations (`pydoc` + authorized workspace docs)
 - persistent coding-task history, replay preparation, verified drafts, and apply confirmation
 - separate effective `Code` and `Explain` profile selection, with `Explain` following `Code` by default
 
@@ -21,6 +23,9 @@ The repository keeps the shipped product surface only. Local plans, tests, progr
 - Streams detailed explanations over SSE for the sidebar
 - Labels explanation history as baseline-only, mixed, or traced-only
 - Shows structured caller/callee context in the sidebar instead of free-form related-entity text
+- Serves bounded `subgraph` and `impact-paths` graph queries for repo-local entity relations
+- Supports AST-derived fallback `external_refs` for external calls and inheritance
+- Syncs authorized workspace docs into SQLite FTS for explanation-time retrieval
 - Tracks explanation telemetry in admin stats
 - Supports baseline onboarding for existing Python files
 - Exposes a backend-orchestrated coding loop:
@@ -57,6 +62,8 @@ Coding Agent / Baseline Onboarding
 - Explanation APIs accept `profile_id` and return `resolved_profile_id`
 - Sidebar shows a baseline/mixed disclaimer when explanation history is not fully traced
 - Sidebar renders `Who calls this` and `What this calls` from structured relation data
+- Sidebar renders `Global Impact` with bounded upstream/downstream path summaries
+- Sidebar renders `External Docs` from the explanation payload
 
 ### Code
 
@@ -88,6 +95,12 @@ Coding Agent / Baseline Onboarding
 - Each file is posted to the backend as a baseline event
 - Indexed entities become explainable even before real traced edits exist
 
+### Docs
+
+- `TailEvents: Manage Authorized Docs` lets the extension choose workspace `.md` / `.txt` files to authorize for explanation-time retrieval
+- The extension snapshots the selected docs and syncs them to the backend
+- Detailed explanations can then pull at most a small bounded set of matching doc snippets alongside `pydoc` results
+
 ## Key API Endpoints
 
 - `POST /api/v1/events`
@@ -97,6 +110,8 @@ Coding Agent / Baseline Onboarding
 - `GET /api/v1/explain/{entity_id}`
 - `GET /api/v1/explain/{entity_id}/summary`
 - `GET /api/v1/explain/{entity_id}/stream`
+- `GET /api/v1/relations/{entity_id}/subgraph`
+- `GET /api/v1/relations/{entity_id}/impact-paths`
 - `GET /api/v1/events/for-entity/{entity_id}`
 - `POST /api/v1/coding/tasks`
 - `GET /api/v1/coding/tasks/history`
@@ -109,6 +124,7 @@ Coding Agent / Baseline Onboarding
 - `POST /api/v1/profiles/sync`
 - `GET /api/v1/profiles/status`
 - `GET /api/v1/coding/capabilities`
+- `POST /api/v1/docs/sync`
 - `POST /api/v1/baseline/onboard-file`
 - `GET /api/v1/admin/stats`
 
@@ -158,7 +174,8 @@ For extension development, open the repo in VS Code and start the extension host
 - Profile definitions and selection are still command-driven; the sidebar shows effective state but does not provide an inline profile editor
 - History filtering and incremental loading are shipped in the same page; a richer standalone history presentation is still not shipped
 - `mcp` and `skills` are capability placeholders and currently report `not implemented in Phase 4`
-- Graph analysis is still a stub
+- Graph support is intentionally limited to `subgraph` and `impact-paths`; graph cache, community detection, cycle reports, and importance ranking are not shipped
+- External docs are intentionally limited to `pydoc` plus authorized workspace `.md` / `.txt` files; there is no network retrieval
 - Repo-scale autonomous observation and broader multi-round task planning are not shipped yet
 
 ## License

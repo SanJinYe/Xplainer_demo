@@ -5,7 +5,9 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from tailevents.models.docs import ExternalDocMatch
 from tailevents.models.enums import EntityType
+from tailevents.models.graph import GlobalImpactPath, GraphSubgraphSummary
 
 
 HistorySource = Literal["baseline_only", "mixed", "traced_only"]
@@ -32,10 +34,10 @@ class LocalRelationContext(BaseModel):
 
 
 class GlobalRelationContext(BaseModel):
-    """Reserved structure for later graph-aware relation context."""
+    """Graph-aware relation context used by explanations."""
 
-    paths: Optional[list[dict]] = None
-    subgraph: Optional[dict] = None
+    paths: Optional[list[GlobalImpactPath]] = None
+    subgraph: Optional[GraphSubgraphSummary] = None
 
 
 class RelationContext(BaseModel):
@@ -86,7 +88,7 @@ class EntityExplanation(BaseModel):
     history_source: HistorySource = "traced_only"
     relation_context: RelationContext = Field(default_factory=RelationContext)
     related_entities: list[dict] = Field(default_factory=list)
-    external_doc_snippets: list[dict] = Field(default_factory=list)
+    external_doc_snippets: list[ExternalDocMatch] = Field(default_factory=list)
 
     generated_at: datetime = Field(default_factory=datetime.utcnow)
     from_cache: bool = False

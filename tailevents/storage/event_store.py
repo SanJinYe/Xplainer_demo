@@ -52,33 +52,56 @@ class SQLiteEventStore(EventStoreProtocol):
                     None
                     if not event.entity_refs
                     else self._serialize_models(event.entity_refs),
-                    self._serialize_models(event.external_refs),
+                    None
+                    if not event.external_refs
+                    else self._serialize_models(event.external_refs),
                 ),
             )
             await connection.commit()
         return event.event_id
 
-    async def enrich(self, event_id: str, entity_refs: list[EntityRef]) -> None:
+    async def enrich(
+        self,
+        event_id: str,
+        entity_refs: list[EntityRef],
+        external_refs: Optional[list[ExternalRef]] = None,
+    ) -> None:
         async with self._database.connection() as connection:
+            row = await self._fetchone(
+                connection,
+                """
+                SELECT event_id, entity_refs, external_refs
+                FROM events
+                WHERE event_id = ?
+                """,
+                (event_id,),
+            )
+            if row is None:
+                raise RecordNotFoundError(f"Event not found: {event_id}")
+
+            next_entity_refs = row["entity_refs"]
+            next_external_refs = row["external_refs"]
+
+            if next_entity_refs is None:
+                next_entity_refs = self._serialize_models(entity_refs)
+            if external_refs is not None and self._is_empty_model_list(next_external_refs):
+                next_external_refs = self._serialize_models(external_refs)
+
             cursor = await connection.execute(
                 """
                 UPDATE events
-                SET entity_refs = ?
-                WHERE event_id = ? AND entity_refs IS NULL
+                SET entity_refs = ?, external_refs = ?
+                WHERE event_id = ?
                 """,
-                (self._serialize_models(entity_refs), event_id),
+                (next_entity_refs, next_external_refs, event_id),
             )
             await connection.commit()
-            if cursor.rowcount == 0:
-                row = await self._fetchone(
-                    connection,
-                    "SELECT event_id, entity_refs FROM events WHERE event_id = ?",
-                    (event_id,),
-                )
-                if row is None:
-                    raise RecordNotFoundError(f"Event not found: {event_id}")
+
+            if row["entity_refs"] is not None and (
+                external_refs is None or not self._is_empty_model_list(row["external_refs"])
+            ):
                 raise EventEnrichmentError(
-                    f"Event entity_refs already enriched: {event_id}"
+                    f"Event entity_refs/external_refs already enriched: {event_id}"
                 )
 
     async def get(self, event_id: str) -> Optional[TailEvent]:
@@ -205,6 +228,9 @@ class SQLiteEventStore(EventStoreProtocol):
         if value is None:
             return []
         return [model_type.model_validate(item) for item in json.loads(value)]
+
+    def _is_empty_model_list(self, value: Optional[str]) -> bool:
+        return value is None or value == "[]"
 
     def _build_line_range(
         self, line_start: Optional[int], line_end: Optional[int]

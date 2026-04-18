@@ -1,6 +1,7 @@
 """Relation extraction and synchronization."""
 
 from dataclasses import dataclass
+from typing import Optional
 
 from tailevents.models.enums import Provenance, RelationType
 from tailevents.models.protocols import RelationStoreProtocol
@@ -12,6 +13,7 @@ from tailevents.indexer.ast_analyzer import ASTAnalyzer
 class RelationSyncResult:
     relation_ids: list[str]
     impacted_entity_ids: list[str]
+    graph_changed: bool
 
 
 class RelationExtractor:
@@ -28,13 +30,25 @@ class RelationExtractor:
         known_entities: dict[str, str],
         source_entity_ids_to_refresh: list[str],
         event_id: str,
+        entity_files: Optional[dict[str, str]] = None,
     ) -> RelationSyncResult:
+        entity_files = entity_files or {}
         impacted_entity_ids: list[str] = []
+        previous_relation_keys: set[tuple[str, str, str]] = set()
         for entity_id in dict.fromkeys(source_entity_ids_to_refresh):
             previous_relations = await self._relation_store.get_outgoing(entity_id)
             impacted_entity_ids.append(entity_id)
             impacted_entity_ids.extend(
                 relation.target for relation in previous_relations if relation.is_active
+            )
+            previous_relation_keys.update(
+                (
+                    relation.source,
+                    relation.target,
+                    relation.relation_type.value,
+                )
+                for relation in previous_relations
+                if relation.is_active
             )
             await self._relation_store.deactivate_by_source(entity_id)
 
@@ -42,10 +56,12 @@ class RelationExtractor:
             source=source,
             file_path=file_path,
             known_entities=known_entities,
+            entity_files=entity_files,
         )
 
         relation_ids: list[str] = []
         seen: set[tuple[str, str, str]] = set()
+        current_relation_keys: set[tuple[str, str, str]] = set()
         for relation in extracted_relations:
             source_qname = relation["source_qname"]
             target_qname = relation["target_qname"]
@@ -58,6 +74,7 @@ class RelationExtractor:
             if dedupe_key in seen:
                 continue
             seen.add(dedupe_key)
+            current_relation_keys.add(dedupe_key)
 
             relation_record = Relation(
                 source=source_id,
@@ -73,6 +90,7 @@ class RelationExtractor:
         return RelationSyncResult(
             relation_ids=relation_ids,
             impacted_entity_ids=list(dict.fromkeys(impacted_entity_ids)),
+            graph_changed=previous_relation_keys != current_relation_keys,
         )
 
 

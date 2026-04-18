@@ -103,6 +103,27 @@ export interface BackendExternalRef {
     usage_pattern: string;
 }
 
+export interface AuthorizedDocSnapshotPayload {
+    file_path: string;
+    content: string;
+    content_hash: string;
+}
+
+export interface DocsSyncRequestPayload {
+    documents: AuthorizedDocSnapshotPayload[];
+}
+
+export interface DocsSyncSkippedItem {
+    file_path: string;
+    reason: string;
+}
+
+export interface DocsSyncResponsePayload {
+    accepted: number;
+    skipped: DocsSyncSkippedItem[];
+    revision: number;
+}
+
 export interface BackendTailEvent {
     event_id: string;
     timestamp: string;
@@ -348,8 +369,8 @@ export interface BackendLocalRelationContext {
 }
 
 export interface BackendGlobalRelationContext {
-    paths?: Array<Record<string, unknown>> | null;
-    subgraph?: Record<string, unknown> | null;
+    paths?: BackendGlobalImpactPath[] | null;
+    subgraph?: BackendGraphSubgraphSummary | null;
 }
 
 export interface BackendRelationContext {
@@ -374,10 +395,57 @@ export interface BackendEntityExplanation {
     history_source: HistorySource;
     relation_context: BackendRelationContext;
     related_entities: BackendRelatedEntity[];
-    external_doc_snippets: Array<Record<string, unknown>>;
+    external_doc_snippets: BackendExternalDocMatch[];
     generated_at: string;
     from_cache: boolean;
     confidence: number;
+}
+
+export interface BackendGlobalImpactPathStep {
+    entity_id: string;
+    qualified_name: string;
+    entity_type: string;
+}
+
+export interface BackendGlobalImpactPath {
+    direction: "upstream" | "downstream";
+    steps: BackendGlobalImpactPathStep[];
+    cost: number;
+    hop_count: number;
+    composed_hops: number;
+    terminal_entity_id: string;
+    terminal_qualified_name: string;
+    truncated: boolean;
+}
+
+export interface BackendGraphSubgraphSummary {
+    depth: number;
+    node_count: number;
+    edge_count: number;
+    truncated: boolean;
+    relation_types: string[];
+}
+
+export interface BackendExternalDocSource {
+    kind: "pydoc" | "workspace_doc";
+    package: string;
+    symbol: string;
+    file_path?: string | null;
+    doc_uri?: string | null;
+}
+
+export interface BackendExternalDocChunk {
+    chunk_id: string;
+    content: string;
+    content_hash?: string | null;
+}
+
+export interface BackendExternalDocMatch {
+    source: BackendExternalDocSource;
+    chunk: BackendExternalDocChunk;
+    usage_pattern: string;
+    version?: string | null;
+    score: number;
 }
 
 export interface BackendExplanationStreamInit {
@@ -448,6 +516,20 @@ export interface RelatedEntityViewModel {
     direction: string;
 }
 
+export interface GlobalImpactPathViewModel {
+    direction: "upstream" | "downstream";
+    terminalEntityId: string;
+    terminalLabel: string;
+    qualifiedPath: string;
+    costLabel: string;
+}
+
+export interface ExternalDocViewModel {
+    title: string;
+    sourceLabel: string;
+    excerpt: string;
+}
+
 export interface SidebarViewModel {
     entityId: string;
     entityName: string;
@@ -469,6 +551,10 @@ export interface SidebarViewModel {
     callers: RelatedEntityViewModel[];
     callees: RelatedEntityViewModel[];
     relatedEntities: RelatedEntityViewModel[];
+    globalImpactPaths: GlobalImpactPathViewModel[];
+    globalImpactSummary: string | null;
+    externalDocs: ExternalDocViewModel[];
+    externalDocsPlaceholder: string;
     profile: EffectiveProfileViewModel | null;
 }
 

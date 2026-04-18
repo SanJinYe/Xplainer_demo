@@ -18,6 +18,7 @@
     "onCommand:tailEvents.openPanel",
     "onCommand:tailEvents.refreshPanel",
     "onCommand:tailEvents.manageCodingProfiles",
+    "onCommand:tailEvents.manageAuthorizedDocs",
     "onCommand:tailEvents.selectCodeProfile",
     "onCommand:tailEvents.selectExplainProfile"
   ],
@@ -43,6 +44,10 @@
       {
         "command": "tailEvents.manageCodingProfiles",
         "title": "TailEvents: Manage Profiles"
+      },
+      {
+        "command": "tailEvents.manageAuthorizedDocs",
+        "title": "TailEvents: Manage Authorized Docs"
       },
       {
         "command": "tailEvents.selectCodeProfile",

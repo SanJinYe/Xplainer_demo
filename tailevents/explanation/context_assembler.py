@@ -1,6 +1,9 @@
 """Assemble structured context for explanation prompts."""
 
+from typing import Sequence
+
 from tailevents.explanation.exceptions import InvalidDetailLevelError
+from tailevents.models.docs import ExternalDocMatch
 from tailevents.models.entity import CodeEntity
 from tailevents.models.event import TailEvent
 
@@ -16,7 +19,7 @@ class ContextAssembler:
         entity: CodeEntity,
         events: list[TailEvent],
         related_entities: list[dict],
-        doc_snippets: list[dict],
+        doc_snippets: Sequence[object],
         detail_level: str,
     ) -> str:
         if detail_level not in VALID_DETAIL_LEVELS:
@@ -44,7 +47,7 @@ class ContextAssembler:
         self,
         entity: CodeEntity,
         events: list[TailEvent],
-        doc_snippets: list[dict],
+        doc_snippets: Sequence[object],
     ) -> str:
         sections = [
             self._format_target_entity(entity),
@@ -59,7 +62,7 @@ class ContextAssembler:
         entity: CodeEntity,
         events: list[TailEvent],
         related_entities: list[dict],
-        doc_snippets: list[dict],
+        doc_snippets: Sequence[object],
     ) -> str:
         sections = [
             self._format_target_entity(entity),
@@ -216,16 +219,22 @@ class ContextAssembler:
             return f"{base} - {context}"
         return base
 
-    def _format_external_docs(self, doc_snippets: list[dict]) -> str:
+    def _format_external_docs(
+        self,
+        doc_snippets: Sequence[object],
+    ) -> str:
         lines = ["# External Dependencies"]
         for snippet in doc_snippets:
-            usage = snippet.get("usage_pattern")
-            lines.append(
-                f"- {snippet['package']}.{snippet['symbol']} ({usage})"
-                if usage
-                else f"- {snippet['package']}.{snippet['symbol']}"
-            )
-            lines.append(f"  Doc: {snippet['snippet']}")
+            if isinstance(snippet, ExternalDocMatch):
+                usage = snippet.usage_pattern
+                title = f"{snippet.source.package}.{snippet.source.symbol}"
+                content = snippet.chunk.content
+            else:
+                usage = snippet.get("usage_pattern")
+                title = f"{snippet['package']}.{snippet['symbol']}"
+                content = snippet["snippet"]
+            lines.append(f"- {title} ({usage})" if usage else f"- {title}")
+            lines.append(f"  Doc: {content}")
         return "\n".join(lines)
 
     def _format_event_trace(self, events: list[TailEvent]) -> str:

@@ -11,6 +11,7 @@ from tailevents.storage.exceptions import (
 )
 from tailevents.storage.relation_store import SQLiteRelationStore
 from tailevents.storage.task_step_store import SQLiteTaskStepStore
+from tailevents.storage.version_store import SQLiteVersionStore
 
 __all__ = [
     "EventEnrichmentError",
@@ -21,6 +22,7 @@ __all__ = [
     "SQLiteEventStore",
     "SQLiteRelationStore",
     "SQLiteTaskStepStore",
+    "SQLiteVersionStore",
     "StorageError",
     "get_db",
     "initialize_db",

@@ -2075,6 +2075,10 @@ function buildInitialViewModel(
         callers: [],
         callees: [],
         relatedEntities: [],
+        globalImpactPaths: [],
+        globalImpactSummary: null,
+        externalDocs: [],
+        externalDocsPlaceholder: "暂未接入",
         profile: {
             ...profile,
             resolvedProfileId: payload.resolved_profile_id ?? profile.resolvedProfileId,
@@ -2106,6 +2110,11 @@ function mergeFinalExplanation(
         "callee",
     );
     viewModel.relatedEntities = buildRelatedEntities(explanation);
+    viewModel.globalImpactPaths = buildGlobalImpactPaths(explanation);
+    viewModel.globalImpactSummary = buildGlobalImpactSummary(explanation);
+    viewModel.externalDocs = buildExternalDocs(explanation);
+    viewModel.externalDocsPlaceholder =
+        viewModel.externalDocs.length > 0 ? "" : "暂未接入";
     viewModel.streamError = null;
     if (viewModel.profile) {
         viewModel.profile = {
@@ -2144,6 +2153,44 @@ function buildRelatedEntities(
             relationLabel: `${direction} ${relationType}`.trim(),
             qualifiedName: item.qualified_name,
             direction,
+        };
+    });
+}
+
+function buildGlobalImpactPaths(explanation: BackendEntityExplanation) {
+    return (explanation.relation_context?.global?.paths ?? []).map((item) => {
+        const qualifiedPath = item.steps.map((step) => step.qualified_name).join(" -> ");
+        return {
+            direction: item.direction,
+            terminalEntityId: item.terminal_entity_id,
+            terminalLabel:
+                item.terminal_qualified_name.split(".").at(-1) ?? item.terminal_qualified_name,
+            qualifiedPath,
+            costLabel: `cost ${item.cost} • hops ${item.hop_count}`,
+        };
+    });
+}
+
+function buildGlobalImpactSummary(explanation: BackendEntityExplanation): string | null {
+    const subgraph = explanation.relation_context?.global?.subgraph;
+    if (!subgraph) {
+        return null;
+    }
+    const suffix = subgraph.truncated ? " • truncated" : "";
+    return `Depth ${subgraph.depth} • ${subgraph.node_count} nodes • ${subgraph.edge_count} edges${suffix}`;
+}
+
+function buildExternalDocs(explanation: BackendEntityExplanation) {
+    return (explanation.external_doc_snippets ?? []).map((item) => {
+        const title = `${item.source.package}.${item.source.symbol}`;
+        const sourceLabel =
+            item.source.kind === "workspace_doc"
+                ? item.source.file_path ?? "workspace doc"
+                : "pydoc";
+        return {
+            title,
+            sourceLabel,
+            excerpt: item.chunk.content,
         };
     });
 }

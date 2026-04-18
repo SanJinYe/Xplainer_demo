@@ -3,9 +3,15 @@
 from typing import AsyncIterator, Optional, Protocol, TYPE_CHECKING, runtime_checkable
 
 if TYPE_CHECKING:
+    from tailevents.models.docs import (
+        AuthorizedDocSnapshot,
+        DocsSyncResponse,
+        ExternalDocMatch,
+    )
     from tailevents.models.entity import CodeEntity
     from tailevents.models.event import EntityRef, TailEvent
     from tailevents.models.explanation import EntityExplanation, ExplanationStreamEvent
+    from tailevents.models.graph import GlobalImpactPath, GraphSubgraph
     from tailevents.models.profile import (
         CodingCapabilitiesResponse,
         CodingProfilesStatusResponse,
@@ -26,14 +32,19 @@ if TYPE_CHECKING:
         CodingTaskToolResultRequest,
         TaskStepEvent,
     )
-    from tailevents.models.event import RawEvent
+    from tailevents.models.event import ExternalRef, RawEvent
 
 
 @runtime_checkable
 class EventStoreProtocol(Protocol):
     async def put(self, event: "TailEvent") -> str: ...
 
-    async def enrich(self, event_id: str, entity_refs: list["EntityRef"]) -> None: ...
+    async def enrich(
+        self,
+        event_id: str,
+        entity_refs: list["EntityRef"],
+        external_refs: Optional[list["ExternalRef"]] = None,
+    ) -> None: ...
 
     async def get(self, event_id: str) -> Optional["TailEvent"]: ...
 
@@ -98,6 +109,8 @@ class IndexerResult(Protocol):
     entities_modified: list[str]
     entities_deleted: list[str]
     relations_created: list[str]
+    external_refs: list["ExternalRef"]
+    graph_changed: bool
     pending: bool
 
 
@@ -145,7 +158,14 @@ class CacheProtocol(Protocol):
 
 @runtime_checkable
 class GraphServiceProtocol(Protocol):
-    async def get_subgraph(self, entity_id: str, depth: int = 2) -> dict: ...
+    async def get_subgraph(self, entity_id: str, depth: int = 2) -> "GraphSubgraph": ...
+
+    async def get_impact_paths(
+        self,
+        entity_id: str,
+        direction: str = "both",
+        limit: int = 3,
+    ) -> list["GlobalImpactPath"]: ...
 
     async def get_isolated_entities(self) -> list[str]: ...
 
@@ -179,7 +199,12 @@ class LLMClientProtocol(Protocol):
 
 @runtime_checkable
 class DocRetrieverProtocol(Protocol):
-    async def retrieve(self, package: str, symbol: str) -> Optional[str]: ...
+    async def retrieve(self, package: str, symbol: str) -> list["ExternalDocMatch"]: ...
+
+    async def sync_documents(
+        self,
+        snapshots: list["AuthorizedDocSnapshot"],
+    ) -> "DocsSyncResponse": ...
 
 
 @runtime_checkable

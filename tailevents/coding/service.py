@@ -6,6 +6,7 @@ from datetime import datetime
 import hashlib
 import json
 import re
+import sqlite3
 from dataclasses import dataclass, field
 from typing import AsyncIterator, Optional
 
@@ -511,14 +512,14 @@ class CodingTaskService:
                     editable_views = await self._reobserve_editable_files(session, initial_hashes)
                     context_views = await self._observe_context_files(session)
         except CodingTaskCancelledError:
-            await self._update_task_record(
+            await self._update_task_record_if_available(
                 session,
                 status="cancelled",
                 last_error="Task cancelled",
             )
             await self._emit(session, "status", {"status": "cancelled"})
         except asyncio.CancelledError:
-            await self._update_task_record(
+            await self._update_task_record_if_available(
                 session,
                 status="cancelled",
                 last_error="Task cancelled",
@@ -879,6 +880,17 @@ class CodingTaskService:
             }
         )
         await self._task_store.put(session.record)
+
+    async def _update_task_record_if_available(
+        self,
+        session: _TaskSession,
+        **changes: object,
+    ) -> None:
+        try:
+            await self._update_task_record(session, **changes)
+        except sqlite3.ProgrammingError as error:
+            if "closed database" not in str(error).lower():
+                raise
 
     async def _capture_model_output(
         self,
