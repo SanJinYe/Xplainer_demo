@@ -17,6 +17,9 @@ TEST_TUTORIAL.md
 RECORD.md
 CURRENT_PROGRESS.md
 tests/
+!tests/
+tests/*
+!tests/test_coding_runtime.py
 regression_report.txt
 explanation_prompt_audit.md
 explanation_quality_check.md

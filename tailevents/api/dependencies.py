@@ -321,6 +321,8 @@ def build_lifespan(
             step_store=task_step_store,
             ingestion_pipeline=ingestion_pipeline,
             profile_registry=profile_registry,
+            explanation_engine=explanation_engine,
+            graph_service=graph_service,
         )
 
         container = AppContainer(
