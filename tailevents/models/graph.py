@@ -6,6 +6,16 @@ from pydantic import BaseModel, Field
 
 
 ImpactDirection = Literal["upstream", "downstream"]
+ImpactRelationType = Literal["calls", "imports", "inherits", "composed_of"]
+ImpactEvidenceLevel = Literal["strong", "weak"]
+ImpactTerminalReason = Literal[
+    "module_root",
+    "inheritance_root",
+    "inheritance_leaf",
+    "call_boundary",
+    "frontier",
+]
+ImpactTruncationReason = Literal["frontier", "hop_limit", "expansion_limit"]
 
 
 class GraphNode(BaseModel):
@@ -57,12 +67,16 @@ class GlobalImpactPath(BaseModel):
 
     direction: ImpactDirection
     steps: list[GlobalImpactPathStep] = Field(default_factory=list)
+    step_relations: list[ImpactRelationType] = Field(default_factory=list)
     cost: int
     hop_count: int
     composed_hops: int = 0
     terminal_entity_id: str
     terminal_qualified_name: str
+    terminal_reason: ImpactTerminalReason
+    evidence_level: ImpactEvidenceLevel = "weak"
     truncated: bool = False
+    truncation_reason: Optional[ImpactTruncationReason] = None
 
 
 __all__ = [
@@ -72,5 +86,9 @@ __all__ = [
     "GraphNode",
     "GraphSubgraph",
     "GraphSubgraphSummary",
+    "ImpactEvidenceLevel",
     "ImpactDirection",
+    "ImpactRelationType",
+    "ImpactTerminalReason",
+    "ImpactTruncationReason",
 ]

@@ -34,9 +34,15 @@ class GraphMetricsTracker:
         *,
         total_ms: float,
         truncated: bool,
+        paths: Optional[list[GlobalImpactPath]] = None,
         error: bool = False,
     ) -> None:
-        self._impact_paths.record(total_ms=total_ms, truncated=truncated, error=error)
+        self._impact_paths.record(
+            total_ms=total_ms,
+            truncated=truncated,
+            error=error,
+            paths=paths,
+        )
 
     def snapshot(self) -> dict[str, dict[str, float | int | None]]:
         return {
@@ -51,6 +57,13 @@ class GraphMetricsTracker:
 
 class GraphService(GraphServiceProtocol):
     """Serve lightweight graph queries from current relation state."""
+
+    _RELATION_WEIGHTS = {
+        RelationType.CALLS.value: 1,
+        RelationType.INHERITS.value: 2,
+        RelationType.COMPOSED_OF.value: 3,
+        RelationType.IMPORTS.value: 4,
+    }
 
     def __init__(
         self,
@@ -194,6 +207,7 @@ class GraphService(GraphServiceProtocol):
             self._telemetry.record_impact_paths(
                 total_ms=(time.perf_counter() - started_at) * 1000,
                 truncated=truncated,
+                paths=paths,
                 error=False,
             )
             return paths
@@ -201,6 +215,7 @@ class GraphService(GraphServiceProtocol):
             self._telemetry.record_impact_paths(
                 total_ms=(time.perf_counter() - started_at) * 1000,
                 truncated=truncated,
+                paths=None,
                 error=True,
             )
             raise
@@ -243,26 +258,130 @@ class GraphService(GraphServiceProtocol):
             incoming.setdefault(relation.target, []).append(relation)
         return outgoing, incoming
 
-    def _build_impact_maps(self, relations: list[Relation]) -> dict[str, dict[str, list[tuple[str, str]]]]:
-        forward_calls: dict[str, list[tuple[str, str]]] = {}
-        reverse_calls: dict[str, list[tuple[str, str]]] = {}
-        composed_any: dict[str, list[tuple[str, str]]] = {}
+    def _build_impact_maps(
+        self,
+        relations: list[Relation],
+    ) -> dict[str, dict[str, list[tuple[str, str]]]]:
+        upstream: dict[str, list[tuple[str, str]]] = {}
+        downstream: dict[str, list[tuple[str, str]]] = {}
+        upstream_inherits: dict[str, list[tuple[str, str]]] = {}
+        downstream_inherits: dict[str, list[tuple[str, str]]] = {}
+        upstream_primary: dict[str, list[tuple[str, str]]] = {}
+        downstream_primary: dict[str, list[tuple[str, str]]] = {}
 
         for relation in relations:
             if not relation.is_active:
                 continue
             relation_name = relation.relation_type.value
             if relation.relation_type == RelationType.CALLS:
-                forward_calls.setdefault(relation.source, []).append((relation.target, relation_name))
-                reverse_calls.setdefault(relation.target, []).append((relation.source, relation_name))
+                self._register_impact_edge(
+                    upstream,
+                    relation.target,
+                    relation.source,
+                    relation_name,
+                )
+                self._register_impact_edge(
+                    downstream,
+                    relation.source,
+                    relation.target,
+                    relation_name,
+                )
+                self._register_impact_edge(
+                    upstream_primary,
+                    relation.target,
+                    relation.source,
+                    relation_name,
+                )
+                self._register_impact_edge(
+                    downstream_primary,
+                    relation.source,
+                    relation.target,
+                    relation_name,
+                )
+            elif relation.relation_type == RelationType.IMPORTS:
+                self._register_impact_edge(
+                    upstream,
+                    relation.target,
+                    relation.source,
+                    relation_name,
+                )
+                self._register_impact_edge(
+                    downstream,
+                    relation.source,
+                    relation.target,
+                    relation_name,
+                )
+                self._register_impact_edge(
+                    upstream_primary,
+                    relation.target,
+                    relation.source,
+                    relation_name,
+                )
+                self._register_impact_edge(
+                    downstream_primary,
+                    relation.source,
+                    relation.target,
+                    relation_name,
+                )
             elif relation.relation_type == RelationType.COMPOSED_OF:
-                composed_any.setdefault(relation.source, []).append((relation.target, relation_name))
-                composed_any.setdefault(relation.target, []).append((relation.source, relation_name))
+                self._register_impact_edge(
+                    upstream,
+                    relation.target,
+                    relation.source,
+                    relation_name,
+                )
+                self._register_impact_edge(
+                    downstream,
+                    relation.source,
+                    relation.target,
+                    relation_name,
+                )
+            elif relation.relation_type == RelationType.INHERITS:
+                # Stored as child -> base. Impact traversal treats base -> child as downstream.
+                self._register_impact_edge(
+                    upstream,
+                    relation.source,
+                    relation.target,
+                    relation_name,
+                )
+                self._register_impact_edge(
+                    downstream,
+                    relation.target,
+                    relation.source,
+                    relation_name,
+                )
+                self._register_impact_edge(
+                    upstream_inherits,
+                    relation.source,
+                    relation.target,
+                    relation_name,
+                )
+                self._register_impact_edge(
+                    downstream_inherits,
+                    relation.target,
+                    relation.source,
+                    relation_name,
+                )
+                self._register_impact_edge(
+                    upstream_primary,
+                    relation.source,
+                    relation.target,
+                    relation_name,
+                )
+                self._register_impact_edge(
+                    downstream_primary,
+                    relation.target,
+                    relation.source,
+                    relation_name,
+                )
 
         return {
-            "forward_calls": forward_calls,
-            "reverse_calls": reverse_calls,
-            "composed_any": composed_any,
+            "upstream": upstream,
+            "downstream": downstream,
+            "upstream_inherits": upstream_inherits,
+            "downstream_inherits": downstream_inherits,
+            "upstream_primary": upstream_primary,
+            "downstream_primary": downstream_primary,
         }
 
     def _search_direction(
@@ -274,43 +393,47 @@ class GraphService(GraphServiceProtocol):
         entities: dict[str, CodeEntity],
         relation_maps: dict[str, dict[str, list[tuple[str, str]]]],
     ) -> tuple[list[GlobalImpactPath], bool]:
-        if self._is_boundary(
+        initial_terminal_reason = self._strong_terminal_reason(
             entity_id=start_id,
             direction=direction,
             entities=entities,
             relation_maps=relation_maps,
-        ):
+            path_relations=(),
+        )
+        if initial_terminal_reason is not None:
             entity = entities[start_id]
             return (
                 [
                     GlobalImpactPath(
                         direction=direction,
                         steps=[self._to_path_step(entity)],
+                        step_relations=[],
                         cost=0,
                         hop_count=0,
                         composed_hops=0,
                         terminal_entity_id=entity.entity_id,
                         terminal_qualified_name=entity.qualified_name,
+                        terminal_reason=initial_terminal_reason,
+                        evidence_level="weak",
                         truncated=False,
+                        truncation_reason=None,
                     )
                 ],
                 False,
             )
 
-        heap: list[tuple[int, int, int, int, tuple[str, ...]]] = []
-        heapq.heappush(heap, (0, 0, 0, 0, (start_id,)))
+        heap: list[tuple[int, int, int, int, int, tuple[str, ...], tuple[str, ...]]] = []
+        heapq.heappush(heap, (0, 0, 0, 0, 0, (start_id,), ()))
         candidates: list[GlobalImpactPath] = []
         expanded = 0
         truncated = False
 
         while heap and expanded < self._max_expanded_nodes:
-            cost, composed_hops, hop_count, _, path = heapq.heappop(heap)
+            cost, hop_count, composed_hops, import_hops, _, path, path_relations = heapq.heappop(
+                heap
+            )
             current_id = path[-1]
             expanded += 1
-
-            if hop_count > self._max_impact_hops:
-                truncated = True
-                continue
 
             expandable_neighbors = [
                 (neighbor_id, relation_type)
@@ -321,37 +444,56 @@ class GraphService(GraphServiceProtocol):
                 )
                 if neighbor_id in entities and neighbor_id not in path
             ]
-            strict_boundary = self._is_boundary(
+            strong_terminal_reason = self._strong_terminal_reason(
                 entity_id=current_id,
                 direction=direction,
                 entities=entities,
                 relation_maps=relation_maps,
+                path_relations=path_relations,
             )
             reached_frontier = len(expandable_neighbors) == 0
             hit_hop_ceiling = hop_count >= self._max_impact_hops
 
-            if strict_boundary or reached_frontier or hit_hop_ceiling:
+            if strong_terminal_reason is not None or reached_frontier or hit_hop_ceiling:
+                truncation_reason = None
+                terminal_reason = strong_terminal_reason or "frontier"
+                is_truncated_path = False
+                if strong_terminal_reason is None:
+                    is_truncated_path = True
+                    truncation_reason = "hop_limit" if hit_hop_ceiling else "frontier"
                 candidates.append(
                     self._build_impact_path(
                         direction=direction,
                         path=list(path),
+                        path_relations=list(path_relations),
                         entities=entities,
                         cost=cost,
                         composed_hops=composed_hops,
                         hop_count=hop_count,
-                        truncated=not strict_boundary,
+                        terminal_reason=terminal_reason,
+                        truncated=is_truncated_path,
+                        truncation_reason=truncation_reason,
                     )
                 )
-                if hit_hop_ceiling and not strict_boundary:
+                if is_truncated_path:
                     truncated = True
                 if len(candidates) >= limit:
                     break
                 continue
 
-            for neighbor_id, relation_type in expandable_neighbors:
-                next_cost = cost + (2 if relation_type == RelationType.COMPOSED_OF.value else 1)
+            for neighbor_id, relation_type in sorted(
+                expandable_neighbors,
+                key=lambda item: (
+                    self._relation_weight(item[1]),
+                    entities[item[0]].qualified_name,
+                ),
+            ):
+                next_cost = cost + self._relation_weight(relation_type)
                 next_composed = composed_hops + int(
                     relation_type == RelationType.COMPOSED_OF.value
+                )
+                next_imports = import_hops + int(
+                    relation_type == RelationType.IMPORTS.value
                 )
                 next_hops = hop_count + 1
                 if next_hops > self._max_impact_hops:
@@ -361,10 +503,12 @@ class GraphService(GraphServiceProtocol):
                     heap,
                     (
                         next_cost,
-                        next_composed,
                         next_hops,
+                        next_composed,
+                        next_imports,
                         expanded,
                         (*path, neighbor_id),
+                        (*path_relations, relation_type),
                     ),
                 )
 
@@ -375,6 +519,8 @@ class GraphService(GraphServiceProtocol):
             candidates,
             key=lambda item: (
                 item.cost,
+                item.evidence_level != "strong",
+                item.truncated,
                 item.composed_hops,
                 item.hop_count,
                 item.terminal_qualified_name,
@@ -390,52 +536,77 @@ class GraphService(GraphServiceProtocol):
         direction: str,
         relation_maps: dict[str, dict[str, list[tuple[str, str]]]],
     ) -> list[tuple[str, str]]:
-        neighbors: list[tuple[str, str]] = []
-        if direction == "upstream":
-            neighbors.extend(relation_maps["reverse_calls"].get(entity_id, []))
-        else:
-            neighbors.extend(relation_maps["forward_calls"].get(entity_id, []))
-        neighbors.extend(relation_maps["composed_any"].get(entity_id, []))
-        return neighbors
+        return list(relation_maps[direction].get(entity_id, []))
 
-    def _is_boundary(
+    def _strong_terminal_reason(
         self,
         *,
         entity_id: str,
         direction: str,
         entities: dict[str, CodeEntity],
         relation_maps: dict[str, dict[str, list[tuple[str, str]]]],
-    ) -> bool:
+        path_relations: tuple[str, ...],
+    ) -> Optional[str]:
         entity = entities[entity_id]
-        if entity.entity_type not in {EntityType.FUNCTION, EntityType.METHOD}:
-            return False
-        if direction == "upstream":
-            return len(relation_maps["reverse_calls"].get(entity_id, [])) == 0
-        return len(relation_maps["forward_calls"].get(entity_id, [])) == 0
+        if direction == "upstream" and entity.entity_type == EntityType.MODULE:
+            return "module_root"
+        if RelationType.INHERITS.value in path_relations and entity.entity_type == EntityType.CLASS:
+            if direction == "upstream" and not relation_maps["upstream_inherits"].get(
+                entity_id
+            ):
+                return "inheritance_root"
+            if direction == "downstream" and not relation_maps["downstream_inherits"].get(
+                entity_id
+            ):
+                return "inheritance_leaf"
+        if entity.entity_type in {EntityType.FUNCTION, EntityType.METHOD}:
+            primary_key = f"{direction}_primary"
+            if relation_maps[primary_key].get(entity_id):
+                return None
+            if direction == "upstream" and relation_maps["upstream"].get(entity_id):
+                return None
+            if direction == "downstream" and relation_maps["downstream"].get(entity_id):
+                return None
+            return "call_boundary"
+        return None
 
     def _build_impact_path(
         self,
         *,
         direction: str,
         path: list[str],
+        path_relations: list[str],
         entities: dict[str, CodeEntity],
         cost: int,
         composed_hops: int,
         hop_count: int,
+        terminal_reason: str,
         truncated: bool,
+        truncation_reason: Optional[str],
     ) -> GlobalImpactPath:
         display_path = list(reversed(path)) if direction == "upstream" else path
+        display_relations = (
+            list(reversed(path_relations)) if direction == "upstream" else path_relations
+        )
         steps = [self._to_path_step(entities[entity_id]) for entity_id in display_path]
         terminal = entities[display_path[0] if direction == "upstream" else display_path[-1]]
         return GlobalImpactPath(
             direction=direction,
             steps=steps,
+            step_relations=display_relations,
             cost=cost,
             hop_count=hop_count,
             composed_hops=composed_hops,
             terminal_entity_id=terminal.entity_id,
             terminal_qualified_name=terminal.qualified_name,
+            terminal_reason=terminal_reason,
+            evidence_level=self._classify_evidence(
+                path_relations=path_relations,
+                terminal_reason=terminal_reason,
+                truncated=truncated,
+            ),
             truncated=truncated,
+            truncation_reason=truncation_reason,
         )
 
     def _to_graph_node(self, entity: CodeEntity) -> GraphNode:
@@ -455,6 +626,39 @@ class GraphService(GraphServiceProtocol):
     def _path_signature(self, path: GlobalImpactPath) -> str:
         return " > ".join(step.qualified_name for step in path.steps)
 
+    def _classify_evidence(
+        self,
+        *,
+        path_relations: list[str],
+        terminal_reason: str,
+        truncated: bool,
+    ) -> str:
+        if truncated:
+            return "weak"
+        if terminal_reason == "frontier":
+            return "weak"
+        if any(
+            relation_type in {RelationType.CALLS.value, RelationType.INHERITS.value}
+            for relation_type in path_relations
+        ):
+            return "strong"
+        return "weak"
+
+    def _relation_weight(self, relation_type: str) -> int:
+        return self._RELATION_WEIGHTS.get(relation_type, 5)
+
+    def _register_impact_edge(
+        self,
+        mapping: dict[str, list[tuple[str, str]]],
+        source_id: str,
+        target_id: str,
+        relation_type: str,
+    ) -> None:
+        mapping.setdefault(source_id, [])
+        edge = (target_id, relation_type)
+        if edge not in mapping[source_id]:
+            mapping[source_id].append(edge)
+
 
 class _MetricBucket:
     def __init__(self, sample_limit: int):
@@ -463,14 +667,51 @@ class _MetricBucket:
         self._requests = 0
         self._errors = 0
         self._truncated = 0
+        self._paths = 0
+        self._strong_paths = 0
+        self._weak_paths = 0
+        self._truncated_paths = 0
+        self._truncated_frontier_paths = 0
+        self._truncated_hop_limit_paths = 0
+        self._truncated_expansion_paths = 0
+        self._edge_counts = {
+            RelationType.CALLS.value: 0,
+            RelationType.INHERITS.value: 0,
+            RelationType.COMPOSED_OF.value: 0,
+            RelationType.IMPORTS.value: 0,
+        }
 
-    def record(self, *, total_ms: float, truncated: bool, error: bool) -> None:
+    def record(
+        self,
+        *,
+        total_ms: float,
+        truncated: bool,
+        error: bool,
+        paths: Optional[list[GlobalImpactPath]] = None,
+    ) -> None:
         self._requests += 1
         if error:
             self._errors += 1
         if truncated:
             self._truncated += 1
         self._total_ms.append(total_ms)
+        for path in paths or []:
+            self._paths += 1
+            if path.evidence_level == "strong":
+                self._strong_paths += 1
+            else:
+                self._weak_paths += 1
+            if path.truncated:
+                self._truncated_paths += 1
+                if path.truncation_reason == "frontier":
+                    self._truncated_frontier_paths += 1
+                elif path.truncation_reason == "hop_limit":
+                    self._truncated_hop_limit_paths += 1
+                elif path.truncation_reason == "expansion_limit":
+                    self._truncated_expansion_paths += 1
+            for relation_type in path.step_relations:
+                if relation_type in self._edge_counts:
+                    self._edge_counts[relation_type] += 1
 
     def snapshot(self) -> dict[str, float | int | None]:
         ordered = sorted(self._total_ms)
@@ -484,6 +725,17 @@ class _MetricBucket:
             "truncated": self._truncated,
             "avg_ms": round(mean(self._total_ms), 2) if self._total_ms else 0.0,
             "p95_ms": p95,
+            "paths": self._paths,
+            "strong_paths": self._strong_paths,
+            "weak_paths": self._weak_paths,
+            "truncated_paths": self._truncated_paths,
+            "truncated_frontier_paths": self._truncated_frontier_paths,
+            "truncated_hop_limit_paths": self._truncated_hop_limit_paths,
+            "truncated_expansion_paths": self._truncated_expansion_paths,
+            "edge_calls": self._edge_counts[RelationType.CALLS.value],
+            "edge_inherits": self._edge_counts[RelationType.INHERITS.value],
+            "edge_composed_of": self._edge_counts[RelationType.COMPOSED_OF.value],
+            "edge_imports": self._edge_counts[RelationType.IMPORTS.value],
         }
 
     def reset(self) -> None:
@@ -491,6 +743,15 @@ class _MetricBucket:
         self._requests = 0
         self._errors = 0
         self._truncated = 0
+        self._paths = 0
+        self._strong_paths = 0
+        self._weak_paths = 0
+        self._truncated_paths = 0
+        self._truncated_frontier_paths = 0
+        self._truncated_hop_limit_paths = 0
+        self._truncated_expansion_paths = 0
+        for relation_type in self._edge_counts:
+            self._edge_counts[relation_type] = 0
 
 
 __all__ = ["GraphMetricsTracker", "GraphService"]

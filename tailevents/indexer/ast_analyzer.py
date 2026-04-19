@@ -104,12 +104,46 @@ class ASTAnalyzer:
             return None
 
 
+def module_qualified_name_for_path(file_path: str) -> str:
+    """Normalize a Python file path into the module entity qualified name."""
+
+    normalized = file_path.replace("\\", "/")
+    if normalized.endswith(".py"):
+        normalized = normalized[:-3]
+    parts = [part for part in normalized.split("/") if part and part != "."]
+    if parts and parts[-1] == "__init__":
+        parts = parts[:-1]
+    if not parts:
+        return normalized or "__init__"
+    return ".".join(parts)
+
+
 class _EntityExtractor(ast.NodeVisitor):
     def __init__(self, source: str, file_path: str):
         self._source = source
         self._file_path = file_path
+        self._module_qualified_name = module_qualified_name_for_path(file_path)
         self._container_stack: list[tuple[str, str]] = []
         self.entities: list[dict[str, Any]] = []
+
+    def visit_Module(self, node: ast.Module) -> Any:
+        normalized_body = self._normalized_body(node)
+        self.entities.append(
+            {
+                "name": self._module_qualified_name.rsplit(".", 1)[-1],
+                "qualified_name": self._module_qualified_name,
+                "entity_type": "module",
+                "signature": f"module {self._module_qualified_name}",
+                "params": [],
+                "return_type": None,
+                "docstring": ast.get_docstring(node),
+                "line_range": self._module_line_range(),
+                "body_hash": self._body_hash(normalized_body),
+                "normalized_body": normalized_body,
+                "file_path": self._file_path,
+            }
+        )
+        self.generic_visit(node)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> Any:
         qualified_name = self._qualified_name(node.name)
@@ -188,6 +222,10 @@ class _EntityExtractor(ast.NodeVisitor):
         if lineno is None or end_lineno is None:
             return None
         return (int(lineno), int(end_lineno))
+
+    def _module_line_range(self) -> tuple[int, int]:
+        line_count = len(self._source.splitlines())
+        return (1, max(1, line_count))
 
     def _annotation(self, annotation: Optional[ast.AST]) -> Optional[str]:
         if annotation is None:
@@ -269,6 +307,7 @@ class _ResolutionVisitor(ast.NodeVisitor):
     ):
         self._source = source
         self._file_path = file_path
+        self._module_qname = module_qualified_name_for_path(file_path)
         self._known_entities = known_entities
         self._entity_files = entity_files
         self._entity_stack: list[str] = []
@@ -457,6 +496,12 @@ class _RelationExtractor(_ResolutionVisitor):
 
     def visit_ClassDef(self, node: ast.ClassDef) -> Any:
         qualified_name = self._qualified_name(node.name)
+        if not self._container_stack:
+            self._add_relation(
+                self._module_qname,
+                qualified_name,
+                RelationType.COMPOSED_OF.value,
+            )
         for base in node.bases:
             target_qname = self._resolve_target(
                 ast.unparse(base),
@@ -479,29 +524,37 @@ class _RelationExtractor(_ResolutionVisitor):
         self.generic_visit(node)
 
     def visit_Import(self, node: ast.Import) -> Any:
-        if self._entity_stack:
+        source_qname = self._entity_stack[-1] if self._entity_stack else self._module_qname
+        if source_qname:
             for alias in node.names:
                 target_qname = self._resolve_target(alias.name, current_class=None)
-                if target_qname is not None:
+                if target_qname is not None and target_qname != source_qname:
                     self._add_relation(
-                        self._entity_stack[-1], target_qname, RelationType.IMPORTS.value
+                        source_qname, target_qname, RelationType.IMPORTS.value
                     )
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> Any:
-        if self._entity_stack:
+        source_qname = self._entity_stack[-1] if self._entity_stack else self._module_qname
+        if source_qname:
             module = node.module or ""
             for alias in node.names:
                 raw_name = alias.name if not module else f"{module}.{alias.name}"
                 target_qname = self._resolve_target(raw_name, current_class=None)
-                if target_qname is not None:
+                if target_qname is not None and target_qname != source_qname:
                     self._add_relation(
-                        self._entity_stack[-1], target_qname, RelationType.IMPORTS.value
+                        source_qname, target_qname, RelationType.IMPORTS.value
                     )
         self.generic_visit(node)
 
     def _visit_function(self, name: str, node: ast.AST) -> None:
         qualified_name = self._qualified_name(name)
+        if not self._container_stack:
+            self._add_relation(
+                self._module_qname,
+                qualified_name,
+                RelationType.COMPOSED_OF.value,
+            )
         if (
             self._class_stack
             and self._container_stack

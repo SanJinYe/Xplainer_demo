@@ -1,6 +1,6 @@
 """Prompt templates for explanation generation."""
 
-EXPLANATION_PROMPT_VERSION = "v4"
+EXPLANATION_PROMPT_VERSION = "v5"
 
 SYSTEM_PROMPT = """
 你是一个代码解释生成器。

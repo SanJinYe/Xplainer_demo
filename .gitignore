@@ -31,3 +31,5 @@ vscode-extension/manual_test_complex_target.py
 vscode-extension/scripts/
 .vscode-test/
 .vscode-test-web/
+/ref-agent/
+/ref-docs/

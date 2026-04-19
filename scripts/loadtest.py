@@ -34,7 +34,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--scenario",
-        choices=["ingest", "summary", "impact-paths", "hot-cache-explain", "mixed-workload"],
+        choices=[
+            "ingest",
+            "summary",
+            "impact-paths",
+            "impact-paths-mixed",
+            "hot-cache-explain",
+            "mixed-workload",
+        ],
         required=True,
         help="Load test scenario to run.",
     )
@@ -614,6 +621,60 @@ async def seed_summary_targets(
     }
 
 
+async def seed_mixed_graph_targets(
+    client: httpx.AsyncClient,
+    target_count: int,
+) -> dict[str, Any]:
+    entity_ids: list[str] = []
+    seed_index = 0
+
+    while len(entity_ids) < target_count:
+        suffix = f"{seed_index:04d}"
+        session_id = f"impact-mixed-seed-{suffix}"
+        file_path = f"pkg_{suffix}/service.py"
+        class_name = f"Service_{suffix}"
+        response = await client.post(
+            "events/batch",
+            json=[
+                {
+                    "action_type": "create",
+                    "file_path": f"pkg_{suffix}/base.py",
+                    "code_snapshot": (
+                        "class BaseHandler:\n"
+                        "    def normalize(self, value):\n"
+                        "        return value.strip()\n"
+                    ),
+                    "intent": "create base handler",
+                    "session_id": session_id,
+                },
+                {
+                    "action_type": "create",
+                    "file_path": file_path,
+                    "code_snapshot": (
+                        f"from pkg_{suffix}.base import BaseHandler\n"
+                        f"import pkg_{suffix}.base as base_mod\n\n"
+                        f"class {class_name}(BaseHandler):\n"
+                        "    def run(self, value):\n"
+                        "        helper = base_mod.BaseHandler()\n"
+                        "        return helper.normalize(value)\n"
+                    ),
+                    "intent": "create service with inheritance and import bridge",
+                    "session_id": session_id,
+                },
+            ],
+        )
+        response.raise_for_status()
+        entity_ids.append(
+            await _resolve_entity_id_by_qname(client, class_name)
+        )
+        seed_index += 1
+
+    return {
+        "seed_count": seed_index,
+        "entity_ids": entity_ids,
+    }
+
+
 async def run_explain_request(
     client: httpx.AsyncClient,
     payload: dict[str, Any],
@@ -745,7 +806,7 @@ async def run_scenario(
                         raise RuntimeError("summary scenario missing entity_ids payload")
                     entity_ids = payload["entity_ids"]
                     result = await run_summary_request(client, entity_ids[index])
-                elif scenario == "impact-paths":
+                elif scenario in {"impact-paths", "impact-paths-mixed"}:
                     if payload is None:
                         raise RuntimeError("impact-paths scenario missing entity_ids payload")
                     entity_ids = payload["entity_ids"]
@@ -759,7 +820,7 @@ async def run_scenario(
                     operation = "ingest"
                 elif scenario == "summary":
                     operation = "summary"
-                elif scenario == "impact-paths":
+                elif scenario in {"impact-paths", "impact-paths-mixed"}:
                     operation = "impact-paths"
                 else:
                     operation = "explain"
@@ -1034,6 +1095,10 @@ async def async_main() -> None:
                 elif args.scenario == "impact-paths":
                     target_count = max(args.seed_count, args.requests)
                     setup = await seed_summary_targets(client, target_count)
+                    scenario_payload = setup
+                elif args.scenario == "impact-paths-mixed":
+                    target_count = max(args.seed_count, args.requests)
+                    setup = await seed_mixed_graph_targets(client, target_count)
                     scenario_payload = setup
                 elif args.scenario == "hot-cache-explain":
                     setup = await warm_hot_cache(client)

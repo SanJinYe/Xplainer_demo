@@ -410,12 +410,16 @@ export interface BackendGlobalImpactPathStep {
 export interface BackendGlobalImpactPath {
     direction: "upstream" | "downstream";
     steps: BackendGlobalImpactPathStep[];
+    step_relations?: string[];
     cost: number;
     hop_count: number;
     composed_hops: number;
     terminal_entity_id: string;
     terminal_qualified_name: string;
+    terminal_reason?: string;
+    evidence_level?: "strong" | "weak";
     truncated: boolean;
+    truncation_reason?: string | null;
 }
 
 export interface BackendGraphSubgraphSummary {

@@ -17,6 +17,7 @@ import type {
     BackendCodingCapabilitiesResponse,
     BackendCodingTaskHistoryDetail,
     BackendEntityExplanation,
+    BackendGlobalImpactPath,
     BackendExplanationStreamInit,
     BackendTailEvent,
     BackendTaskStepEvent,
@@ -2161,14 +2162,18 @@ function buildRelatedEntities(
 
 function buildGlobalImpactPaths(explanation: BackendEntityExplanation) {
     return (explanation.relation_context?.global?.paths ?? []).map((item) => {
-        const qualifiedPath = item.steps.map((step) => step.qualified_name).join(" -> ");
+        const qualifiedPath = buildQualifiedImpactPath(item);
+        const evidenceLabel = item.evidence_level === "strong" ? "strong evidence" : "limited evidence";
+        const terminalReason = formatImpactTerminalReason(item.terminal_reason, item.direction);
+        const truncationReason = formatImpactTruncationReason(item.truncation_reason);
+        const suffixParts = [terminalReason, truncationReason].filter((part) => part.length > 0);
         return {
             direction: item.direction,
             terminalEntityId: item.terminal_entity_id,
             terminalLabel:
                 item.terminal_qualified_name.split(".").at(-1) ?? item.terminal_qualified_name,
             qualifiedPath,
-            costLabel: `cost ${item.cost} • hops ${item.hop_count}`,
+            costLabel: `${evidenceLabel} • cost ${item.cost} • hops ${item.hop_count}${suffixParts.length ? ` • ${suffixParts.join(" • ")}` : ""}`,
         };
     });
 }
@@ -2190,6 +2195,51 @@ function buildGlobalImpactEmptyText(explanation: BackendEntityExplanation): stri
         return "No terminal paths yet. Local relations and the subgraph summary are still available.";
     }
     return "No global paths yet.";
+}
+
+function buildQualifiedImpactPath(item: BackendGlobalImpactPath) {
+    const steps = item.steps ?? [];
+    const relations = item.step_relations ?? [];
+    if (steps.length <= 1) {
+        return steps[0]?.qualified_name ?? "";
+    }
+    const parts: string[] = [steps[0].qualified_name];
+    for (let index = 1; index < steps.length; index += 1) {
+        const relationLabel = relations[index - 1] ?? "linked";
+        parts.push(`-${relationLabel}->`);
+        parts.push(steps[index].qualified_name);
+    }
+    return parts.join(" ");
+}
+
+function formatImpactTerminalReason(reason: string | undefined, direction: "upstream" | "downstream"): string {
+    switch (reason) {
+        case "module_root":
+            return direction === "upstream" ? "module root" : "module boundary";
+        case "inheritance_root":
+            return "inheritance root";
+        case "inheritance_leaf":
+            return "inheritance leaf";
+        case "call_boundary":
+            return "call boundary";
+        case "frontier":
+            return "frontier";
+        default:
+            return "";
+    }
+}
+
+function formatImpactTruncationReason(reason: string | null | undefined): string {
+    switch (reason) {
+        case "frontier":
+            return "frontier fallback";
+        case "hop_limit":
+            return "hop-limited";
+        case "expansion_limit":
+            return "search-limited";
+        default:
+            return "";
+    }
 }
 
 function buildExternalDocs(explanation: BackendEntityExplanation) {
