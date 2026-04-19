@@ -573,6 +573,28 @@ export interface CodingTaskHistoryItemViewModel {
     selected: boolean;
 }
 
+export type DraftFileBaseSource = "workspace_live" | "unavailable";
+
+export interface DraftFileViewModel {
+    filePath: string;
+    content: string;
+    contentHash: string;
+    baseContent: string | null;
+    baseSource: DraftFileBaseSource;
+    originalContentHash: string | null;
+    originalDocumentVersion: number | null;
+}
+
+export interface HistoryDetailStepViewModel {
+    stepId: string;
+    stepKind: BackendTaskStepEvent["step_kind"];
+    status: BackendTaskStepEvent["status"];
+    filePath: string;
+    summary: string;
+    toolName: string | null;
+    timestamp: string;
+}
+
 export interface CodingTaskHistoryDetailViewModel {
     taskId: string;
     targetFilePath: string;
@@ -585,6 +607,8 @@ export interface CodingTaskHistoryDetailViewModel {
     transcriptText: string;
     modelOutputText: string;
     draftText: string;
+    draftFiles: DraftFileViewModel[];
+    steps: HistoryDetailStepViewModel[];
     launchMode: CodingTaskLaunchMode;
     sourceTaskId: string | null;
     selectedProfileId: string | null;
@@ -670,6 +694,7 @@ export interface CodeViewModel {
     transcriptText: string;
     modelOutputText: string;
     draftText: string;
+    draftFiles: DraftFileViewModel[];
     message: string | null;
     canRun: boolean;
     canCancel: boolean;
@@ -837,6 +862,11 @@ export interface SidebarSelectExplainProfileMessage {
     type: "selectExplainProfile";
 }
 
+export interface SidebarOpenWorkspaceFileMessage {
+    type: "openWorkspaceFile";
+    path: string;
+}
+
 export interface SidebarSetHistoryStatusFilterMessage {
     type: "setHistoryStatusFilter";
     status: HistoryFilterStatus;
@@ -879,6 +909,7 @@ export type SidebarMessageFromWebview =
     | SidebarReplayHistoryTaskMessage
     | SidebarSelectCodeProfileMessage
     | SidebarSelectExplainProfileMessage
+    | SidebarOpenWorkspaceFileMessage
     | SidebarSetHistoryStatusFilterMessage
     | SidebarSetHistoryTargetQueryMessage
     | SidebarSetHistoryTargetSelectionMessage

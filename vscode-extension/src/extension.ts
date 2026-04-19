@@ -81,6 +81,25 @@ export function activate(context: vscode.ExtensionContext): void {
         getCodeProfilePreferenceId: () => profileManager.getCodeProfilePreferenceId(),
         getExplainProfilePreferenceId: () => profileManager.getExplainProfilePreferenceId(),
         templatePath: path.join(context.extensionPath, "media", "sidebar.html"),
+        reactLocalResourceRoots: [vscode.Uri.joinPath(
+            context.extensionUri,
+            "webview-ui",
+            "dist",
+            "assets",
+        )],
+        getReactAssetUris: (webview) => {
+            const assetsRoot = vscode.Uri.joinPath(
+                context.extensionUri,
+                "webview-ui",
+                "dist",
+                "assets",
+            );
+            return {
+                scriptUri: webview.asWebviewUri(vscode.Uri.joinPath(assetsRoot, "index.js")).toString(),
+                styleUri: webview.asWebviewUri(vscode.Uri.joinPath(assetsRoot, "index.css")).toString(),
+            };
+        },
+        shouldUseLegacyWebview: () => getConfiguration().get<boolean>("legacyWebview", false),
         runtime: {
             getActiveEditor: () => vscode.window.activeTextEditor ?? null,
             getWorkspaceFolders: () => vscode.workspace.workspaceFolders,
@@ -195,6 +214,14 @@ export function activate(context: vscode.ExtensionContext): void {
     context.subscriptions.push(
         vscode.window.onDidChangeActiveTextEditor(() => {
             void sidebarProvider.refreshCodeContext();
+        }),
+    );
+
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeConfiguration((event) => {
+            if (event.affectsConfiguration("tailEvents.legacyWebview")) {
+                sidebarProvider.refreshWebviewHtml();
+            }
         }),
     );
 

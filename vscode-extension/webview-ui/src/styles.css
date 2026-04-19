@@ -1,0 +1,50 @@
+@tailwind components;
+@tailwind utilities;
+
+:root {
+    color-scheme: light dark;
+    --te-bg: var(--vscode-sideBar-background, var(--vscode-editor-background));
+    --te-surface: var(--vscode-editorWidget-background, rgba(127, 127, 127, 0.08));
+    --te-surface-muted: var(--vscode-input-background, rgba(127, 127, 127, 0.05));
+    --te-border: var(--vscode-panel-border, rgba(127, 127, 127, 0.25));
+    --te-border-strong: var(--vscode-focusBorder, var(--vscode-button-background));
+    --te-foreground: var(--vscode-foreground, var(--vscode-editor-foreground));
+    --te-muted: var(--vscode-descriptionForeground, rgba(127, 127, 127, 0.9));
+    --te-accent: var(--vscode-button-background, #0e639c);
+    --te-accent-foreground: var(--vscode-button-foreground, #ffffff);
+    --te-subtle-accent: var(--vscode-list-activeSelectionBackground, rgba(14, 99, 156, 0.18));
+    --te-danger: var(--vscode-inputValidation-errorBorder, #f14c4c);
+    --te-warning: var(--vscode-inputValidation-warningBorder, #cca700);
+    --te-font: var(--vscode-font-family, "Segoe UI", sans-serif);
+    --te-font-size: var(--vscode-font-size, 13px);
+}
+
+html,
+body,
+#root {
+    height: 100%;
+}
+
+body {
+    margin: 0;
+    background: var(--te-bg);
+    color: var(--te-foreground);
+    font-family: var(--te-font);
+    font-size: var(--te-font-size);
+}
+
+* {
+    box-sizing: border-box;
+}
+
+button,
+input,
+textarea,
+select {
+    font: inherit;
+}
+
+pre,
+code {
+    font-family: var(--vscode-editor-font-family, "Cascadia Mono", monospace);
+}

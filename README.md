@@ -11,6 +11,7 @@ It records structured change events, maps them to code entities with AST indexin
 - dual-source external doc retrieval for explanations (`pydoc` + authorized workspace docs)
 - persistent coding-task history, replay preparation, verified drafts, and apply confirmation
 - separate effective `Code` and `Explain` profile selection, with `Explain` following `Code` by default
+- a React-based VS Code webview with dedicated `Explain`, `Code`, `History`, and `Profiles` views
 
 The repository keeps the shipped product surface only. Local plans, tests, progress logs, and private notes stay out of version control.
 
@@ -45,7 +46,8 @@ Coding Agent / Baseline Onboarding
   -> Query Router
   -> Explanation Engine
   -> FastAPI
-  -> VS Code Extension
+  -> VS Code Extension Host
+  -> React Webview UI
 ```
 
 ## Main User Flows
@@ -68,7 +70,8 @@ Coding Agent / Baseline Onboarding
 ### Code
 
 - The extension starts a backend-orchestrated coding task from a workspace Python target, defaulting to the active file but allowing an explicit target plus up to 3 readonly context files and 1 additional editable file
-- The `Code` panel uses a prompt-first layout with compact target metadata, profile/capability cards, inline sidebar file pickers, and state-aware `Working` / `History` sections
+- The extension webview is split into `Explain`, `Code`, `History`, and `Profiles` views, while the extension host keeps backend/API orchestration and state aggregation
+- The `Code` view uses a prompt-first layout with compact target metadata, profile/capability cards, inline file pickers, transcript/model-output panels, and per-file draft rendering
 - Target control supports `Use Active File`, `Use Explain File as Target`, and `Back to Explain Entity` without leaving the sidebar workflow
 - The backend drives a constrained tool loop and returns verified drafts per file
 - Only a verified draft can be applied
@@ -79,7 +82,7 @@ Coding Agent / Baseline Onboarding
   - recent target-path suggestions plus exact target filtering
   - incremental `Load More`
   - prompt-preview task cards plus summary-first detail review
-  - detail inspection for prompt, context, transcript, model output, verified draft, reasoning, and apply status
+  - detail inspection for prompt, context, transcript, model output, verified draft, reasoning, apply status, and structured step history
   - `Reuse Prompt/Context`
   - `Replay Task` preparation with lineage metadata
 - Replay-aware tasks surface a compact lineage badge and can jump back to the source task within the loaded history slice
@@ -135,6 +138,7 @@ Coding Agent / Baseline Onboarding
 - aiosqlite
 - Pydantic v2
 - VS Code Extension API
+- React 18 + Vite + Tailwind for the extension webview
 - Ollama, Claude, or OpenRouter as the explanation backend
 
 ## Quick Start
@@ -143,7 +147,8 @@ Install dependencies:
 
 ```bash
 pip install -r requirements.txt
-cd vscode-extension && npm install
+npm --prefix vscode-extension install
+npm --prefix vscode-extension/webview-ui install
 ```
 
 Set environment variables in `.env` as needed. Common local setup:
@@ -172,7 +177,7 @@ For extension development, open the repo in VS Code and start the extension host
 
 - Python is the only indexed language today
 - Profile definitions and selection are still command-driven; the sidebar shows effective state but does not provide an inline profile editor
-- History filtering and incremental loading are shipped in the same page; a richer standalone history presentation is still not shipped
+- The React webview is now the default sidebar shell, but `tailEvents.legacyWebview` still exists as a temporary rollback switch
 - `mcp` and `skills` are capability placeholders and currently report `not implemented in Phase 4`
 - Graph support is intentionally limited to `subgraph` and `impact-paths`; graph cache, community detection, cycle reports, and importance ranking are not shipped
 - The current `Global Impact` surface is best-effort and bounded; deeper graph semantics are intentionally deferred

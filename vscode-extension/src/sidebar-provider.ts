@@ -29,6 +29,7 @@ import type {
     CodePickerViewModel,
     CodeTaskStatus,
     CodeViewModel,
+    DraftFileViewModel,
     EffectiveProfileViewModel,
     HistoryFilterStatus,
     CodingTaskHistoryDetailViewModel,
@@ -45,6 +46,13 @@ import type {
     TimelineItemViewModel,
     TargetSelectionMode,
 } from "./types";
+import {
+    buildActiveDraftFileViewModels,
+    buildHistoryDetailStepViewModels,
+    buildHistoryDraftFileViewModels,
+    formatHistoryStepSummary,
+    isSafeWorkspaceFilePath,
+} from "./webview-host/state-projection";
 
 const EMPTY_MESSAGE =
     "No entity selected. Use the editor title button, the editor context menu, or View Details from hover.";
@@ -102,6 +110,12 @@ interface SidebarRuntime {
 interface SidebarProviderOptions {
     apiClient: TailEventsApi;
     templatePath: string;
+    reactLocalResourceRoots?: readonly vscode.Uri[];
+    getReactAssetUris?: (webview: vscode.Webview) => {
+        scriptUri: string;
+        styleUri: string;
+    };
+    shouldUseLegacyWebview?: () => boolean;
     getBaseUrl: () => string;
     profileStateStore?: ProfileStateStore;
     getCodeProfilePreferenceId?: () => string | null;
@@ -179,6 +193,15 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
     private readonly getExplainProfilePreferenceId: () => string | null;
 
     private readonly runtime: SidebarRuntime;
+
+    private readonly reactLocalResourceRoots: readonly vscode.Uri[];
+
+    private readonly shouldUseLegacyWebview: () => boolean;
+
+    private readonly getReactAssetUris: ((webview: vscode.Webview) => {
+        scriptUri: string;
+        styleUri: string;
+    }) | null;
 
     private view: vscode.WebviewView | null = null;
 
@@ -285,6 +308,9 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         this.getCodeProfilePreferenceId = options.getCodeProfilePreferenceId ?? (() => null);
         this.getExplainProfilePreferenceId = options.getExplainProfilePreferenceId ?? (() => null);
         this.runtime = options.runtime;
+        this.reactLocalResourceRoots = options.reactLocalResourceRoots ?? [];
+        this.shouldUseLegacyWebview = options.shouldUseLegacyWebview ?? (() => true);
+        this.getReactAssetUris = options.getReactAssetUris ?? null;
         this.template = readFileSync(options.templatePath, "utf8");
     }
 
@@ -309,11 +335,21 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         this.view = webviewView;
         webviewView.webview.options = {
             enableScripts: true,
+            localResourceRoots: this.reactLocalResourceRoots.length > 0
+                ? [...this.reactLocalResourceRoots]
+                : undefined,
         };
-        webviewView.webview.html = this.renderHtml(webviewView.webview.cspSource);
+        webviewView.webview.html = this.renderHtml(webviewView.webview);
         webviewView.webview.onDidReceiveMessage((message: SidebarMessageFromWebview) => {
             void this.handleMessage(message);
         });
+    }
+
+    public refreshWebviewHtml(): void {
+        if (!this.view) {
+            return;
+        }
+        this.view.webview.html = this.renderHtml(this.view.webview);
     }
 
     public async loadEntity(entityId: string): Promise<void> {
@@ -486,6 +522,9 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
                 if (message.entityId) {
                     await this.showExplainEntity(message.entityId);
                 }
+                return;
+            case "openWorkspaceFile":
+                await this.openWorkspaceFile(message.path);
                 return;
             case "setCodePickerOpen":
                 await this.setCodePickerOpen(message.kind, message.open);
@@ -1944,6 +1983,7 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         const codeProfile = this.getCodeEffectiveProfile();
         const explainProfile = this.getExplainEffectiveProfile();
         const capabilitySummary = buildCapabilitySummary(this.getCapabilitySnapshot());
+        const draftFiles = await this.buildCurrentDraftFiles(targetState.activeContext);
         const data: CodeViewModel = {
             filePath: targetState.filePath,
             targetSelectionMode: targetState.selectionMode,
@@ -1959,6 +1999,7 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
             transcriptText: this.codeTranscriptText,
             modelOutputText: this.codeModelOutputText,
             draftText: this.codeDraftText,
+            draftFiles,
             message:
                 this.codeMessage ??
                 codeProfile.reason ??
@@ -2031,11 +2072,74 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         await this.view.webview.postMessage(message);
     }
 
-    private renderHtml(cspSource: string): string {
+    private renderHtml(webview: vscode.Webview): string {
+        if (this.getReactAssetUris && !this.shouldUseLegacyWebview()) {
+            return this.renderReactHtml(webview);
+        }
+        return this.renderLegacyHtml(webview.cspSource);
+    }
+
+    private renderLegacyHtml(cspSource: string): string {
         const nonce = randomBytes(16).toString("base64");
         return this.template
             .replaceAll("__NONCE__", nonce)
             .replaceAll("__CSP_SOURCE__", cspSource);
+    }
+
+    private renderReactHtml(webview: vscode.Webview): string {
+        if (!this.getReactAssetUris) {
+            return this.renderLegacyHtml(webview.cspSource);
+        }
+        const nonce = randomBytes(16).toString("base64");
+        const { scriptUri, styleUri } = this.getReactAssetUris(webview);
+        return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+        http-equiv="Content-Security-Policy"
+        content="default-src 'none'; img-src ${webview.cspSource} https: data:; style-src ${webview.cspSource}; script-src 'nonce-${nonce}'; font-src ${webview.cspSource};"
+    />
+    <title>TailEvents</title>
+    <link rel="stylesheet" href="${styleUri}" />
+</head>
+<body>
+    <div id="root"></div>
+    <script nonce="${nonce}" src="${scriptUri}"></script>
+</body>
+</html>`;
+    }
+
+    private async buildCurrentDraftFiles(
+        activeContext: EditorContext | null,
+    ): Promise<DraftFileViewModel[]> {
+        const verifiedFiles = this.currentTaskResult?.verified_files ?? [];
+        if (verifiedFiles.length === 0) {
+            return [];
+        }
+        return buildActiveDraftFileViewModels(verifiedFiles, async (workspaceFilePath) => {
+            if (!isSafeWorkspaceFilePath(workspaceFilePath)) {
+                return null;
+            }
+            const reference = this.resolveFileReference(workspaceFilePath);
+            if (!reference) {
+                return null;
+            }
+            const document = await this.openWorkspaceDocument(reference, activeContext);
+            return document?.getText() ?? null;
+        });
+    }
+
+    private async openWorkspaceFile(workspaceFilePath: string): Promise<void> {
+        if (!isSafeWorkspaceFilePath(workspaceFilePath)) {
+            return;
+        }
+        const reference = this.resolveFileReference(workspaceFilePath);
+        if (!reference) {
+            return;
+        }
+        await this.runtime.openWorkspaceFile?.(reference.workspaceFilePath);
     }
 
     private getCurrentLabel(): string | undefined {
@@ -2341,6 +2445,8 @@ function toHistoryDetailViewModel(
                     .map((item) => `${item.file_path}\n${item.content}`)
                     .join("\n\n")
                 : detail.verified_draft_content ?? "",
+        draftFiles: buildHistoryDraftFileViewModels(detail.verified_files ?? []),
+        steps: buildHistoryDetailStepViewModels(detail.steps),
         launchMode: detail.launch_mode ?? "new",
         sourceTaskId: detail.source_task_id ?? null,
         selectedProfileId: detail.selected_profile_id ?? null,
@@ -2414,7 +2520,7 @@ function defaultCodeMessage(status: CodeTaskStatus): string | null {
 }
 
 function formatStepTranscript(step: BackendTaskStepEvent): string {
-    const summary = step.output_summary || step.reasoning_summary || step.input_summary || step.intent;
+    const summary = formatHistoryStepSummary(step);
     return `${step.step_kind}/${step.status}: ${step.file_path} - ${summary ?? step.intent}`;
 }
 

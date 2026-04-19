@@ -83,6 +83,11 @@
           "default": 5000,
           "minimum": 100,
           "description": "Timeout in milliseconds for TailEvents API requests."
+        },
+        "tailEvents.legacyWebview": {
+          "type": "boolean",
+          "default": false,
+          "description": "Temporarily use the legacy sidebar.html webview instead of the React webview."
         }
       }
     },
@@ -129,7 +134,9 @@
     }
   },
   "scripts": {
-    "compile": "tsc -p ./",
+    "build:webview": "npm --prefix ./webview-ui run build",
+    "watch:webview": "npm --prefix ./webview-ui run build -- --watch",
+    "compile": "npm run build:webview && tsc -p ./",
     "watch": "tsc -watch -p ./",
     "test:unit": "npm run compile && npx mocha \"out/test/**/*.test.js\"",
     "test": "npm run test:unit"

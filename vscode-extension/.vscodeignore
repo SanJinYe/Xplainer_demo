@@ -1,5 +1,12 @@
 src/**
 test/**
+webview-ui/src/**
+webview-ui/node_modules/**
+webview-ui/tsconfig.json
+webview-ui/vite.config.ts
+webview-ui/postcss.config.cjs
+webview-ui/tailwind.config.cjs
+webview-ui/index.html
 tsconfig.json
 extension.ts
 .vscodeignore
