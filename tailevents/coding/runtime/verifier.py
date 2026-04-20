@@ -39,6 +39,9 @@ class DraftVerifier:
         record_step: _RecordStep,
     ) -> DraftVerificationOutcome:
         step_id = new_step_id()
+        primary_target_path = session.resolved_primary_target_path or next(
+            iter(context_bundle.editable_views)
+        )
         await record_step(
             session,
             TaskStepEvent(
@@ -46,7 +49,7 @@ class DraftVerifier:
                 step_id=step_id,
                 step_kind="verify",
                 status="started",
-                file_path=session.request.target_file_path,
+                file_path=primary_target_path,
                 content_hash=self._hash_content(json.dumps(draft_contents, sort_keys=True)),
                 intent="Verify the task draft before Apply",
                 input_summary=self._truncate(
@@ -63,11 +66,13 @@ class DraftVerifier:
                     f"Re-observe editable file {file_path} before Apply verification",
                 )
                 original_view = context_bundle.editable_views[file_path]
-                self._validate_expected_version(
-                    file_path,
-                    latest_view,
-                    session.expected_versions[file_path],
-                )
+                expected_version = session.expected_versions.get(file_path)
+                if expected_version is not None:
+                    self._validate_expected_version(
+                        file_path,
+                        latest_view,
+                        expected_version,
+                    )
                 if latest_view.content_hash != original_view.content_hash:
                     raise CodingTaskValidationError(
                         f"Editable file content drifted during task execution: {file_path}"
@@ -81,7 +86,7 @@ class DraftVerifier:
                     step_id=step_id,
                     step_kind="verify",
                     status="failed",
-                    file_path=session.request.target_file_path,
+                    file_path=primary_target_path,
                     content_hash=self._hash_content(json.dumps(draft_contents, sort_keys=True)),
                     intent="Verify the task draft before Apply",
                     reasoning_summary=self._truncate(str(error)),
@@ -115,7 +120,7 @@ class DraftVerifier:
                 step_id=step_id,
                 step_kind="verify",
                 status="succeeded",
-                file_path=session.request.target_file_path,
+                file_path=primary_target_path,
                 content_hash=self._hash_content(json.dumps(draft_contents, sort_keys=True)),
                 intent="Verify the task draft before Apply",
                 reasoning_summary=self._truncate(
@@ -159,9 +164,7 @@ class DraftVerifier:
             ) from error
 
     def _ordered_editable_paths(self, session: TaskRuntimeSession) -> list[str]:
-        return [session.request.target_file_path] + [
-            item.file_path for item in session.request.editable_files
-        ]
+        return list(session.resolved_editable_files)
 
     def _hash_content(self, content: str) -> str:
         return hashlib.sha256(content.encode("utf-8")).hexdigest()

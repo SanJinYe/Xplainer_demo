@@ -87,14 +87,15 @@ function ConversationMessage(props: {
         <div className={cn("flex", alignmentClassName)}>
             <article className={bubbleClassName}>
                 <div className="flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-2">
-                        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--te-muted)]">
-                            {props.message.kind === "user_turn" ? "You" : "Assistant"}
-                        </p>
-                        <Badge variant={resolveMessageBadgeVariant(props.message.kind, props.run.status)}>
-                            {resolveMessageBadgeLabel(props.message.kind, props.run.status)}
-                        </Badge>
-                    </div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--te-muted)]">
+                        {props.message.kind === "user_turn"
+                            ? "You"
+                            : props.message.kind === "assistant_working"
+                                ? "Working"
+                                : props.message.kind === "assistant_result"
+                                    ? "Completed"
+                                    : "Needs attention"}
+                    </p>
                     {hasDetails ? (
                         <Button
                             variant="ghost"
@@ -102,7 +103,7 @@ function ConversationMessage(props: {
                             className="border-transparent px-2"
                             onClick={() => setExpanded((current) => !current)}
                         >
-                            {expanded ? "Hide details" : "View details"}
+                            {expanded ? "Hide" : "Details"}
                         </Button>
                     ) : null}
                 </div>
@@ -231,41 +232,6 @@ function DetailsSection(props: { title: string; children: React.ReactNode }) {
             {props.children}
         </section>
     );
-}
-
-function resolveMessageBadgeLabel(
-    kind: CodeConversationMessageViewModel["kind"],
-    runStatus: CodeConversationRunViewModel["status"],
-): string {
-    if (kind === "user_turn") {
-        return "prompt";
-    }
-    if (kind === "assistant_working") {
-        return runStatus === "running" ? "working" : "details";
-    }
-    if (kind === "assistant_error") {
-        return "error";
-    }
-    if (runStatus === "applied") {
-        return "applied";
-    }
-    if (runStatus === "ready_to_apply") {
-        return "ready";
-    }
-    return "result";
-}
-
-function resolveMessageBadgeVariant(
-    kind: CodeConversationMessageViewModel["kind"],
-    runStatus: CodeConversationRunViewModel["status"],
-): "accent" | "subtle" | "warning" | undefined {
-    if (kind === "assistant_error") {
-        return "warning";
-    }
-    if (kind === "assistant_result") {
-        return runStatus === "ready_to_apply" ? "accent" : "subtle";
-    }
-    return "subtle";
 }
 
 function hasTurnDetails(message: CodeConversationMessageViewModel): boolean {

@@ -149,7 +149,12 @@ CREATE VIRTUAL TABLE IF NOT EXISTS doc_search USING fts5(
 CODING_TASKS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS coding_tasks (
     task_id TEXT PRIMARY KEY,
-    target_file_path TEXT NOT NULL,
+    target_file_path TEXT NOT NULL DEFAULT '',
+    target_hint_path TEXT,
+    resolved_primary_target_path TEXT,
+    resolved_target_files TEXT NOT NULL DEFAULT '[]',
+    resolved_editable_files TEXT NOT NULL DEFAULT '[]',
+    resolved_context_files TEXT NOT NULL DEFAULT '[]',
     user_prompt TEXT NOT NULL,
     context_files TEXT NOT NULL,
     editable_files TEXT NOT NULL DEFAULT '[]',
@@ -222,6 +227,19 @@ SCHEMA_SQL = "\n".join(
 )
 
 CODING_TASKS_EXTRA_COLUMNS = {
+    "target_hint_path": "ALTER TABLE coding_tasks ADD COLUMN target_hint_path TEXT",
+    "resolved_primary_target_path": (
+        "ALTER TABLE coding_tasks ADD COLUMN resolved_primary_target_path TEXT"
+    ),
+    "resolved_target_files": (
+        "ALTER TABLE coding_tasks ADD COLUMN resolved_target_files TEXT NOT NULL DEFAULT '[]'"
+    ),
+    "resolved_editable_files": (
+        "ALTER TABLE coding_tasks ADD COLUMN resolved_editable_files TEXT NOT NULL DEFAULT '[]'"
+    ),
+    "resolved_context_files": (
+        "ALTER TABLE coding_tasks ADD COLUMN resolved_context_files TEXT NOT NULL DEFAULT '[]'"
+    ),
     "editable_files": "ALTER TABLE coding_tasks ADD COLUMN editable_files TEXT NOT NULL DEFAULT '[]'",
     "verified_files": "ALTER TABLE coding_tasks ADD COLUMN verified_files TEXT NOT NULL DEFAULT '[]'",
     "applied_events": "ALTER TABLE coding_tasks ADD COLUMN applied_events TEXT NOT NULL DEFAULT '[]'",

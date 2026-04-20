@@ -52,6 +52,9 @@ class CodeAttemptExecutor:
         attempt_number = int(attempt_metadata.get("attempt_number", 1))
         editable_views = context_bundle.editable_views
         context_views = context_bundle.readonly_views
+        primary_target_path = session.resolved_primary_target_path or next(
+            iter(editable_views)
+        )
         await record_step(
             session,
             TaskStepEvent(
@@ -59,8 +62,8 @@ class CodeAttemptExecutor:
                 step_id=step_id,
                 step_kind="edit",
                 status="started",
-                file_path=session.request.target_file_path,
-                content_hash=editable_views[session.request.target_file_path].content_hash,
+                file_path=primary_target_path,
+                content_hash=editable_views[primary_target_path].content_hash,
                 intent="Generate local edits for the declared editable files",
                 input_summary=self._truncate(
                     f"editable={len(editable_views)}, contexts={len(context_views)}"
@@ -77,6 +80,8 @@ class CodeAttemptExecutor:
                     session.request,
                     context_bundle,
                     failure_hint,
+                    primary_target_path=primary_target_path,
+                    scope_summary=session.scope_summary,
                 ),
                 max_tokens=4000,
                 temperature=0.1,
@@ -107,8 +112,8 @@ class CodeAttemptExecutor:
                     step_id=step_id,
                     step_kind="edit",
                     status="failed",
-                    file_path=session.request.target_file_path,
-                    content_hash=editable_views[session.request.target_file_path].content_hash,
+                    file_path=primary_target_path,
+                    content_hash=editable_views[primary_target_path].content_hash,
                     intent="Generate local edits for the declared editable files",
                     reasoning_summary=self._truncate(str(error)),
                     input_summary=self._truncate(
@@ -128,7 +133,7 @@ class CodeAttemptExecutor:
                 step_id=step_id,
                 step_kind="edit",
                 status="succeeded",
-                file_path=session.request.target_file_path,
+                file_path=primary_target_path,
                 content_hash=self._hash_content(json.dumps(draft_contents, sort_keys=True)),
                 intent=plan.intent,
                 reasoning_summary=self._truncate(plan.reasoning),

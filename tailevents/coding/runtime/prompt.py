@@ -10,7 +10,7 @@ SYSTEM_PROMPT = """
 You are a coding agent for one or two editable project files.
 
 You already have the exact observed contents of:
-- one primary editable target file
+- one resolved primary editable target file
 - zero or one additional editable files
 - zero to three read-only context files
 
@@ -36,8 +36,11 @@ USER_PROMPT_TEMPLATE = """
 Task goal:
 {user_prompt}
 
-Primary target file:
-{target_file_path}
+Resolved scope:
+{scope_summary}
+
+Resolved primary target file:
+{primary_target_path}
 
 Editable files:
 {editable_block}
@@ -61,6 +64,8 @@ class CodingPromptBuilder:
         request: CodingTaskCreateRequest,
         bundle: CodingContextBundle,
         failure_hint: Optional[str],
+        primary_target_path: str,
+        scope_summary: Optional[str],
     ) -> str:
         editable_block = "\n\n".join(
             [
@@ -88,7 +93,8 @@ class CodingPromptBuilder:
 
         return USER_PROMPT_TEMPLATE.format(
             user_prompt=request.user_prompt,
-            target_file_path=request.target_file_path,
+            scope_summary=scope_summary or "Use the resolved editable/context files below.",
+            primary_target_path=primary_target_path,
             editable_block=editable_block,
             context_block=context_block,
             failure_hint=failure_hint or "None",

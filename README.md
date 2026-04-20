@@ -31,6 +31,7 @@ The repository keeps the shipped product surface only. Local plans, tests, progr
 - Supports baseline onboarding for existing Python files
 - Exposes a backend-orchestrated coding loop:
   `view -> edit -> verify -> Apply -> event`
+- Resolves coding scope from prompt + optional file hints and a bounded workspace search path instead of requiring a hard target up front
 - Persists coding-task history with pagination, filtering, target-path suggestions, detail review, replay lineage, verified per-file drafts, and apply-event state
 - Supports coding-profile sync from the extension plus backend environment fallback profiles
 - Exposes coding capability discovery for repo observation and multi-file tasks
@@ -69,10 +70,11 @@ Coding Agent / Baseline Onboarding
 
 ### Code
 
-- The extension starts a backend-orchestrated coding task from a workspace Python target, defaulting to the active file but allowing an explicit target plus up to 3 readonly context files and 1 additional editable file
+- The extension starts a backend-orchestrated coding task from a prompt, optionally carrying the active file or explicit file selections as hints while the backend resolves the final editable/context scope
 - The extension webview is split into `Explain`, `Code`, and `History` views, while the extension host keeps backend/API orchestration and state aggregation and exposes profiles through a secondary `ProfilePanel`
 - The `Code` view now uses a chat-native conversation surface: user turns, assistant working turns, assistant results, and assistant errors are the primary UI, while reasoning, tool trace, and file changes live behind expandable details
-- Target control still supports explicit `Use Explain File as Target` and `Back to Explain Entity`, but the active editor is treated as the default hint instead of the main visible workflow control
+- Prompt-only submission is now supported from the shipped webview. If no active file or explicit target is present, the backend can still resolve bounded scope from hints and workspace search
+- Target control still supports explicit overrides such as `Use Explain File as Target`, but target/context/editable controls are secondary hints rather than hard prerequisites
 - The backend drives a constrained tool loop and returns verified drafts per file
 - Only a verified draft can be applied
 - Accepted drafts are written back through one workspace edit and then confirmed to the backend for event persistence
@@ -94,7 +96,7 @@ Coding Agent / Baseline Onboarding
 
 ### Baseline
 
-- `TailEvents: Onboard Repository` is available from the TailEvents sidebar title and scans Python files in the current workspace
+- `TailEvents: Onboard Repository` is available from the webview header and from the command palette, and scans Python files in the current workspace
 - Each file is posted to the backend as a baseline event
 - Indexed entities become explainable even before real traced edits exist
 
@@ -178,7 +180,9 @@ For extension development, open the repo in VS Code and start the extension host
 - Python is the only indexed language today
 - Profile definitions and selection are still command-driven; the sidebar shows effective state but does not provide an inline profile editor
 - The React webview is now the default sidebar shell, but `tailEvents.legacyWebview` still exists as a temporary rollback switch
-- The shipped `Code` surface is now conversation-first on the frontend, but the backend runtime is still target-file-first and has not yet moved to autonomous scope selection
+- The shipped `Code` surface is conversation-first on the frontend, and the backend runtime now accepts prompt-only submissions with optional hints plus bounded workspace search for scope resolution
+- History filters and compact task cards still rely on the legacy `target_file_path` projection even though the authoritative runtime scope is now stored in `resolved_*` fields
+- The host now allows prompt-only submission, but target/context/editable controls are still present as advanced hint controls and the newer `resolved_*` runtime scope is not surfaced directly in the sidebar yet
 - `mcp` and `skills` are capability placeholders and currently report `not implemented in Phase 4`
 - Graph support is intentionally limited to `subgraph` and `impact-paths`; graph cache, community detection, cycle reports, and importance ranking are not shipped
 - The current `Global Impact` surface is best-effort and bounded; deeper graph semantics are intentionally deferred

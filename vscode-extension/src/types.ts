@@ -166,8 +166,8 @@ export interface CreateRawEventPayload {
 }
 
 export interface CodingTaskCreateRequestPayload {
-    target_file_path: string;
-    target_file_version: number;
+    target_file_path?: string | null;
+    target_file_version?: number | null;
     user_prompt: string;
     context_files: string[];
     editable_files?: EditableFileReferencePayload[];
@@ -201,24 +201,28 @@ export interface BackendToolCallPayload {
     task_id: string;
     call_id: string;
     step_id: string;
-    tool_name: "view_file";
-    file_path: string;
+    tool_name: "view_file" | "search_workspace";
+    file_path?: string | null;
+    query?: string | null;
+    limit?: number | null;
     intent: string;
 }
 
 export interface CodingTaskToolResultPayload {
     call_id: string;
-    tool_name: "view_file";
-    file_path: string;
+    tool_name: "view_file" | "search_workspace";
+    file_path?: string | null;
     document_version?: number | null;
     content?: string | null;
     content_hash?: string | null;
+    matches?: string[];
     error?: string | null;
 }
 
 export interface CodingTaskDraftResult {
     task_id: string;
     verified_files?: BackendVerifiedFileDraft[];
+    resolved_primary_target_path?: string | null;
     updated_file_content?: string | null;
     intent: string;
     reasoning?: string | null;
@@ -256,6 +260,11 @@ export interface BackendCodingTaskHistoryTargetsResponse {
 export interface BackendCodingTaskHistoryDetail {
     task_id: string;
     target_file_path: string;
+    target_hint_path?: string | null;
+    resolved_primary_target_path?: string | null;
+    resolved_target_files?: string[];
+    resolved_editable_files?: string[];
+    resolved_context_files?: string[];
     user_prompt: string;
     context_files: string[];
     editable_files?: string[];
@@ -745,6 +754,7 @@ export interface CodeTaskDraftReadyCardViewModel extends CodeTaskCardBase {
 export interface CodeTaskErrorCardViewModel extends CodeTaskCardBase {
     kind: "error";
     message: string;
+    rawMessage?: string | null;
 }
 
 export type CodeTaskCardViewModel =

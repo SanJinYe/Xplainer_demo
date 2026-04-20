@@ -155,7 +155,7 @@ export function CodeWorkbenchView() {
                 <div className="space-y-3">
                     <div className="flex flex-wrap items-center gap-2">
                         <FileChip
-                            label={hasHintTarget ? `Hint: ${data.conversation.composerHintTarget}` : "Hint: follow active editor"}
+                            label={hasHintTarget ? `Hint: ${data.conversation.composerHintTarget}` : "Hint: automatic workspace search"}
                             tone={hasHintTarget ? "accent" : "default"}
                             onClick={() => actions.send({ type: "setCodePickerOpen", kind: "target", open: true })}
                         />
@@ -281,10 +281,10 @@ function IdleConversation(props: { hintTarget: string | null; message: string | 
             <div className="max-w-[420px] rounded-[18px] border border-[var(--te-border)] bg-[var(--te-surface)] px-4 py-3">
                 <p className="text-sm font-medium">Start with the prompt below.</p>
                 <p className="mt-2 text-xs leading-6 text-[var(--te-muted)]">
-                    {props.message ?? "The assistant will gather workflow details and collapse them into the run."}
+                    {props.message ?? "The assistant can resolve scope from your prompt and keep the low-level workflow folded into the run."}
                 </p>
                 <p className="mt-2 text-[11px] text-[var(--te-muted)]">
-                    {props.hintTarget ? `Current hint target: ${props.hintTarget}` : "No active file hint yet."}
+                    {props.hintTarget ? `Current hint target: ${props.hintTarget}` : "No file hint selected. The assistant can still search the workspace."}
                 </p>
             </div>
         </div>

@@ -938,13 +938,19 @@ function isTaskStepEvent(value: any): value is BackendTaskStepEvent {
 }
 
 function isToolCallPayload(value: any): value is BackendToolCallPayload {
+    const isViewFile =
+        value?.tool_name === "view_file" &&
+        typeof value.file_path === "string";
+    const isSearchWorkspace =
+        value?.tool_name === "search_workspace" &&
+        typeof value.query === "string" &&
+        typeof value.limit === "number";
     return Boolean(
         value &&
         typeof value.task_id === "string" &&
         typeof value.call_id === "string" &&
         typeof value.step_id === "string" &&
-        value.tool_name === "view_file" &&
-        typeof value.file_path === "string" &&
+        (isViewFile || isSearchWorkspace) &&
         typeof value.intent === "string",
     );
 }

@@ -1,6 +1,6 @@
 """Context assembly for coding-task execution."""
 
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Optional
 
 from tailevents.coding.context.model import CodingContextBundle, ObservedFileView
 from tailevents.coding.exceptions import CodingTaskValidationError
@@ -8,7 +8,7 @@ from tailevents.coding.runtime.session import TaskRuntimeSession
 
 
 _ViewRequester = Callable[[TaskRuntimeSession, str, str], Awaitable[ObservedFileView]]
-_VersionValidator = Callable[[str, ObservedFileView, int], None]
+_VersionValidator = Callable[[str, ObservedFileView, Optional[int]], None]
 
 
 class TaileventsContextAdapter:
@@ -67,29 +67,28 @@ class TaileventsContextAdapter:
         validate_expected_version: _VersionValidator,
     ) -> dict[str, ObservedFileView]:
         observed: dict[str, ObservedFileView] = {}
-        target_path = session.request.target_file_path
-        observed[target_path] = await request_view(
-            session,
-            target_path,
-            "Observe the primary target file before editing",
-        )
-        validate_expected_version(
-            target_path,
-            observed[target_path],
-            session.request.target_file_version,
-        )
+        primary_target_path = session.resolved_primary_target_path
+        if not primary_target_path:
+            raise CodingTaskValidationError("Resolved primary target path is missing")
 
-        for editable in session.request.editable_files:
-            observed[editable.file_path] = await request_view(
+        for editable_path in session.resolved_editable_files:
+            intent = (
+                "Observe the resolved primary target file before editing"
+                if editable_path == primary_target_path
+                else f"Observe additional editable file {editable_path}"
+            )
+            observed[editable_path] = await request_view(
                 session,
-                editable.file_path,
-                f"Observe additional editable file {editable.file_path}",
+                editable_path,
+                intent,
             )
-            validate_expected_version(
-                editable.file_path,
-                observed[editable.file_path],
-                editable.document_version,
-            )
+            expected_version = session.expected_versions.get(editable_path)
+            if expected_version is not None:
+                validate_expected_version(
+                    editable_path,
+                    observed[editable_path],
+                    expected_version,
+                )
 
         return observed
 
@@ -99,7 +98,7 @@ class TaileventsContextAdapter:
         request_view: _ViewRequester,
     ) -> list[ObservedFileView]:
         observed: list[ObservedFileView] = []
-        for context_file in session.request.context_files:
+        for context_file in session.resolved_context_files:
             observed.append(
                 await request_view(
                     session,

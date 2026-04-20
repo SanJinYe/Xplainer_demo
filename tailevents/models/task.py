@@ -62,8 +62,8 @@ class VerifiedFileDraft(BaseModel):
 class CodingTaskCreateRequest(BaseModel):
     """Create a new coding task session."""
 
-    target_file_path: str
-    target_file_version: int
+    target_file_path: Optional[str] = None
+    target_file_version: Optional[int] = None
     user_prompt: str
     context_files: list[str] = Field(default_factory=list)
     editable_files: list[EditableFileReference] = Field(default_factory=list)
@@ -87,6 +87,11 @@ class CodingTaskRecord(BaseModel):
 
     task_id: str
     target_file_path: str
+    target_hint_path: Optional[str] = None
+    resolved_primary_target_path: Optional[str] = None
+    resolved_target_files: list[str] = Field(default_factory=list)
+    resolved_editable_files: list[str] = Field(default_factory=list)
+    resolved_context_files: list[str] = Field(default_factory=list)
     user_prompt: str
     context_files: list[str] = Field(default_factory=list)
     editable_files: list[str] = Field(default_factory=list)
@@ -149,6 +154,7 @@ class CodingTaskDraftResult(BaseModel):
 
     task_id: str
     verified_files: list[VerifiedFileDraft] = Field(default_factory=list)
+    resolved_primary_target_path: Optional[str] = None
     updated_file_content: Optional[str] = None
     intent: str
     reasoning: Optional[str] = None
@@ -163,8 +169,10 @@ class ToolCallPayload(BaseModel):
     task_id: str
     call_id: str
     step_id: str
-    tool_name: Literal["view_file"]
-    file_path: str
+    tool_name: Literal["view_file", "search_workspace"]
+    file_path: Optional[str] = None
+    query: Optional[str] = None
+    limit: Optional[int] = None
     intent: str
 
 
@@ -172,11 +180,12 @@ class CodingTaskToolResultRequest(BaseModel):
     """Tool result posted back to the backend by the extension."""
 
     call_id: str
-    tool_name: Literal["view_file"]
-    file_path: str
+    tool_name: Literal["view_file", "search_workspace"]
+    file_path: Optional[str] = None
     document_version: Optional[int] = None
     content: Optional[str] = None
     content_hash: Optional[str] = None
+    matches: list[str] = Field(default_factory=list)
     error: Optional[str] = None
 
 
@@ -208,6 +217,11 @@ class CodingTaskHistoryDetail(BaseModel):
 
     task_id: str
     target_file_path: str
+    target_hint_path: Optional[str] = None
+    resolved_primary_target_path: Optional[str] = None
+    resolved_target_files: list[str] = Field(default_factory=list)
+    resolved_editable_files: list[str] = Field(default_factory=list)
+    resolved_context_files: list[str] = Field(default_factory=list)
     user_prompt: str
     context_files: list[str] = Field(default_factory=list)
     editable_files: list[str] = Field(default_factory=list)

@@ -110,13 +110,6 @@
       ]
     },
     "menus": {
-      "view/title": [
-        {
-          "command": "tailEvents.onboardRepository",
-          "when": "view == tailevents.sidebarView",
-          "group": "navigation@1"
-        }
-      ],
       "editor/title": [
         {
           "command": "tailEvents.explainCurrentSymbol",

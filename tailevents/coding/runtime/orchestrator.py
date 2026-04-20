@@ -18,6 +18,7 @@ from tailevents.coding.exceptions import (
     CodingTaskValidationError,
 )
 from tailevents.coding.runtime.session import PendingToolRequest, TaskRuntimeSession
+from tailevents.coding.runtime.scope import ScopeResolver
 from tailevents.models.protocols import (
     CodingProfileRegistryProtocol,
     CodingTaskStoreProtocol,
@@ -44,6 +45,7 @@ MAX_CONTEXT_FILES = 3
 MAX_TOTAL_EDITABLE_FILES = 2
 MAX_RETRIES = 1
 MAX_SUMMARY_LENGTH = 240
+WORKSPACE_SCOPE_SENTINEL = "<workspace>"
 
 
 class TaskOrchestrator:
@@ -66,6 +68,7 @@ class TaskOrchestrator:
         self._capability_policy = capability_policy
         self._context_adapter = context_adapter
         self._profile_registry = profile_registry
+        self._scope_resolver = ScopeResolver()
         self._sessions: dict[str, TaskRuntimeSession] = {}
 
     @property
@@ -79,9 +82,14 @@ class TaskOrchestrator:
         self._validate_request(request)
         task_id = new_task_id()
         llm_client = self._resolve_llm_client(request.selected_profile_id)
+        target_hint_path = self._normalize_optional_path(request.target_file_path)
+        requested_lanes = self._capability_policy.resolve_requested_lanes(
+            list(request.requested_capabilities)
+        )
         record = CodingTaskRecord(
             task_id=task_id,
-            target_file_path=request.target_file_path,
+            target_file_path=target_hint_path or "",
+            target_hint_path=target_hint_path,
             user_prompt=request.user_prompt,
             context_files=list(request.context_files),
             editable_files=[item.file_path for item in request.editable_files],
@@ -93,21 +101,17 @@ class TaskOrchestrator:
         )
         await self._task_store.put(record)
 
-        editable_paths = {
-            request.target_file_path,
-            *[item.file_path for item in request.editable_files],
-        }
-        readonly_paths = set(request.context_files)
         expected_versions = self._build_expected_versions(request)
         session = TaskRuntimeSession(
             task_id=task_id,
             request=request,
             record=record,
             llm_client=llm_client,
-            editable_paths=editable_paths,
-            readonly_paths=readonly_paths,
-            allowed_files=editable_paths | readonly_paths,
+            requested_lanes=requested_lanes,
+            editable_paths=set(),
+            readonly_paths=set(),
             expected_versions=expected_versions,
+            target_hint_path=target_hint_path,
         )
         self._sessions[task_id] = session
 
@@ -135,14 +139,16 @@ class TaskOrchestrator:
             raise CodingTaskConflictError("Tool result call_id does not match the pending request")
         if pending.payload.tool_name != result.tool_name:
             raise CodingTaskConflictError("Tool result tool_name does not match the pending request")
-        if result.file_path not in session.allowed_files:
-            raise CodingTaskValidationError("Tool result file_path is outside the allowed set")
-
         if result.error:
             pending.future.set_exception(CodingTaskValidationError(result.error))
-        else:
-            if result.content is None or result.content_hash is None:
-                raise CodingTaskValidationError("Tool result must include content and content_hash")
+            session.pending_tool = None
+            return
+
+        if pending.payload.tool_name == "view_file":
+            if result.file_path != pending.payload.file_path:
+                raise CodingTaskConflictError("Tool result file_path does not match the pending request")
+            if result.content is None or result.content_hash is None or result.file_path is None:
+                raise CodingTaskValidationError("Tool result must include file_path, content, and content_hash")
             pending.future.set_result(
                 ObservedFileView(
                     file_path=result.file_path,
@@ -151,6 +157,8 @@ class TaskOrchestrator:
                     document_version=result.document_version,
                 )
             )
+        else:
+            pending.future.set_result([item.strip() for item in result.matches if item.strip()])
         session.pending_tool = None
 
     async def cancel_task(self, task_id: str) -> None:
@@ -207,6 +215,29 @@ class TaskOrchestrator:
             )
             await session.event_sink.emit("status", {"status": "running"})
 
+            resolved_scope = await self._scope_resolver.resolve(
+                session=session,
+                search_workspace=self._search_workspace,
+            )
+            session.resolved_primary_target_path = resolved_scope.primary_target_path
+            session.resolved_target_files = list(resolved_scope.target_files)
+            session.resolved_editable_files = list(resolved_scope.editable_files)
+            session.resolved_context_files = list(resolved_scope.context_files)
+            session.editable_paths = set(resolved_scope.editable_files)
+            session.readonly_paths = set(resolved_scope.context_files)
+            session.observation_candidates = set(resolved_scope.target_files) | set(
+                resolved_scope.context_files
+            )
+            session.scope_summary = resolved_scope.scope_summary
+            await self._update_task_record(
+                session,
+                target_file_path=resolved_scope.primary_target_path,
+                resolved_primary_target_path=resolved_scope.primary_target_path,
+                resolved_target_files=resolved_scope.target_files,
+                resolved_editable_files=resolved_scope.editable_files,
+                resolved_context_files=resolved_scope.context_files,
+            )
+
             context_bundle = await self._context_adapter.build_bundle(
                 session=session,
                 request_view=self._request_view,
@@ -239,13 +270,14 @@ class TaskOrchestrator:
                         (
                             item.content
                             for item in outcome.verified_files
-                            if item.file_path == session.request.target_file_path
+                            if item.file_path == session.resolved_primary_target_path
                         ),
                         None,
                     )
                     session.result = CodingTaskDraftResult(
                         task_id=session.task_id,
                         verified_files=outcome.verified_files,
+                        resolved_primary_target_path=session.resolved_primary_target_path,
                         updated_file_content=primary_draft,
                         intent=outcome.plan.intent,
                         reasoning=outcome.plan.reasoning,
@@ -260,6 +292,11 @@ class TaskOrchestrator:
                         applied_events=self._build_pending_applied_events(
                             outcome.verified_files
                         ),
+                        target_file_path=session.resolved_primary_target_path or "",
+                        resolved_primary_target_path=session.resolved_primary_target_path,
+                        resolved_target_files=list(session.resolved_target_files),
+                        resolved_editable_files=list(session.resolved_editable_files),
+                        resolved_context_files=list(session.resolved_context_files),
                         intent=outcome.plan.intent,
                         reasoning=outcome.plan.reasoning,
                         last_error=None,
@@ -339,7 +376,7 @@ class TaskOrchestrator:
             file_path=file_path,
             intent=intent,
         )
-        future: asyncio.Future[ObservedFileView] = asyncio.get_running_loop().create_future()
+        future: asyncio.Future[object] = asyncio.get_running_loop().create_future()
         session.pending_tool = PendingToolRequest(payload=payload, future=future)
         await session.event_sink.emit("tool_call", payload.model_dump(mode="json"))
 
@@ -363,6 +400,9 @@ class TaskOrchestrator:
             )
             raise
 
+        if not isinstance(observed, ObservedFileView):
+            raise CodingTaskValidationError("view_file tool returned an invalid result payload")
+
         await self._record_step(
             session,
             TaskStepEvent(
@@ -381,6 +421,83 @@ class TaskOrchestrator:
             ),
         )
         return observed
+
+    async def _search_workspace(
+        self,
+        session: TaskRuntimeSession,
+        query: str,
+        limit: int,
+        intent: str,
+    ) -> list[str]:
+        step_id = new_step_id()
+        await self._record_step(
+            session,
+            TaskStepEvent(
+                task_id=session.task_id,
+                step_id=step_id,
+                step_kind="view",
+                status="started",
+                file_path=WORKSPACE_SCOPE_SENTINEL,
+                intent=intent,
+                tool_name="search_workspace",
+                input_summary=self._truncate(f"query={query!r}, limit={limit}"),
+            ),
+        )
+
+        payload = ToolCallPayload(
+            task_id=session.task_id,
+            call_id=new_call_id(),
+            step_id=step_id,
+            tool_name="search_workspace",
+            query=query,
+            limit=limit,
+            intent=intent,
+        )
+        future: asyncio.Future[object] = asyncio.get_running_loop().create_future()
+        session.pending_tool = PendingToolRequest(payload=payload, future=future)
+        await session.event_sink.emit("tool_call", payload.model_dump(mode="json"))
+
+        try:
+            matches = await future
+        except Exception as error:
+            await self._record_step(
+                session,
+                TaskStepEvent(
+                    task_id=session.task_id,
+                    step_id=step_id,
+                    step_kind="view",
+                    status="failed",
+                    file_path=WORKSPACE_SCOPE_SENTINEL,
+                    intent=intent,
+                    tool_name="search_workspace",
+                    reasoning_summary=self._truncate(str(error)),
+                    input_summary=self._truncate(f"query={query!r}, limit={limit}"),
+                    output_summary=self._truncate("workspace search failed"),
+                ),
+            )
+            raise
+
+        if not isinstance(matches, list):
+            raise CodingTaskValidationError("search_workspace tool returned an invalid result payload")
+
+        normalized_matches = [str(item).strip() for item in matches if str(item).strip()]
+        await self._record_step(
+            session,
+            TaskStepEvent(
+                task_id=session.task_id,
+                step_id=step_id,
+                step_kind="view",
+                status="succeeded",
+                file_path=WORKSPACE_SCOPE_SENTINEL,
+                intent=intent,
+                tool_name="search_workspace",
+                input_summary=self._truncate(f"query={query!r}, limit={limit}"),
+                output_summary=self._truncate(
+                    f"matched {len(normalized_matches)} workspace file(s)"
+                ),
+            ),
+        )
+        return normalized_matches
 
     async def _record_step(self, session: TaskRuntimeSession, event: TaskStepEvent) -> None:
         await self._step_store.put(event)
@@ -426,15 +543,18 @@ class TaskOrchestrator:
                 raise
 
     def _validate_request(self, request: CodingTaskCreateRequest) -> None:
-        if not request.target_file_path.strip():
-            raise CodingTaskValidationError("target_file_path must not be empty")
-        if request.target_file_version < 1:
-            raise CodingTaskValidationError("target_file_version must be >= 1")
         if not request.user_prompt.strip():
             raise CodingTaskValidationError("user_prompt must not be empty")
         if len(request.context_files) > MAX_CONTEXT_FILES:
             raise CodingTaskValidationError("context_files must contain at most 3 items")
-        if len(request.editable_files) + 1 > MAX_TOTAL_EDITABLE_FILES:
+        target_path = self._normalize_optional_path(request.target_file_path)
+        target_version = request.target_file_version
+        if target_path is not None and (target_version is None or target_version < 1):
+            raise CodingTaskValidationError("target_file_version must be >= 1 when target_file_path is provided")
+        if target_path is None and target_version is not None:
+            raise CodingTaskValidationError("target_file_version is only valid when target_file_path is provided")
+        total_editable_files = len(request.editable_files) + (1 if target_path else 0)
+        if total_editable_files > MAX_TOTAL_EDITABLE_FILES:
             raise CodingTaskValidationError("editable files must contain at most 2 files total")
         if request.launch_mode == "replay" and not request.source_task_id:
             raise CodingTaskValidationError("source_task_id is required for replay tasks")
@@ -446,7 +566,7 @@ class TaskOrchestrator:
             raise CodingTaskValidationError("context_files must not contain empty paths")
         if len(set(context_paths)) != len(context_paths):
             raise CodingTaskValidationError("context_files must not contain duplicates")
-        if request.target_file_path in context_paths:
+        if target_path and target_path in context_paths:
             raise CodingTaskValidationError("context_files must not include the target file")
 
         editable_paths = []
@@ -459,7 +579,7 @@ class TaskOrchestrator:
 
         if len(set(editable_paths)) != len(editable_paths):
             raise CodingTaskValidationError("editable_files must not contain duplicates")
-        if request.target_file_path in editable_paths:
+        if target_path and target_path in editable_paths:
             raise CodingTaskValidationError("editable_files must not include the target file")
         if set(context_paths) & set(editable_paths):
             raise CodingTaskValidationError("context_files and editable_files must not overlap")
@@ -469,8 +589,14 @@ class TaskOrchestrator:
             raise CodingTaskValidationError("requested_capabilities must not contain duplicates")
         self._capability_policy.resolve_requested_lanes(capabilities)
 
-    def _build_expected_versions(self, request: CodingTaskCreateRequest) -> dict[str, int]:
-        expected_versions = {request.target_file_path: request.target_file_version}
+    def _build_expected_versions(
+        self,
+        request: CodingTaskCreateRequest,
+    ) -> dict[str, Optional[int]]:
+        expected_versions: dict[str, Optional[int]] = {}
+        target_path = self._normalize_optional_path(request.target_file_path)
+        if target_path is not None:
+            expected_versions[target_path] = request.target_file_version
         for editable in request.editable_files:
             expected_versions[editable.file_path] = editable.document_version
         return expected_versions
@@ -487,8 +613,10 @@ class TaskOrchestrator:
         self,
         file_path: str,
         observed: ObservedFileView,
-        expected_version: int,
+        expected_version: Optional[int],
     ) -> None:
+        if expected_version is None:
+            return
         if observed.document_version is None:
             raise CodingTaskValidationError(
                 f"Observed file did not include a document version: {file_path}"
@@ -525,6 +653,14 @@ class TaskOrchestrator:
         if len(stripped) <= MAX_SUMMARY_LENGTH:
             return stripped
         return f"{stripped[: MAX_SUMMARY_LENGTH - 3]}..."
+
+    def _normalize_optional_path(self, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            return None
+        return stripped
 
 
 __all__ = ["TaskOrchestrator"]

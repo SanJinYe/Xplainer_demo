@@ -195,6 +195,11 @@ class CodingTaskService:
         return CodingTaskHistoryDetail(
             task_id=record.task_id,
             target_file_path=record.target_file_path,
+            target_hint_path=record.target_hint_path,
+            resolved_primary_target_path=record.resolved_primary_target_path,
+            resolved_target_files=record.resolved_target_files,
+            resolved_editable_files=record.resolved_editable_files,
+            resolved_context_files=record.resolved_context_files,
             user_prompt=record.user_prompt,
             context_files=record.context_files,
             editable_files=record.editable_files,

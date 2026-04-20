@@ -21,6 +21,11 @@ class SQLiteCodingTaskStore(CodingTaskStoreProtocol):
                 INSERT INTO coding_tasks (
                     task_id,
                     target_file_path,
+                    target_hint_path,
+                    resolved_primary_target_path,
+                    resolved_target_files,
+                    resolved_editable_files,
+                    resolved_context_files,
                     user_prompt,
                     context_files,
                     editable_files,
@@ -40,9 +45,14 @@ class SQLiteCodingTaskStore(CodingTaskStoreProtocol):
                     selected_profile_id,
                     requested_capabilities,
                     applied_event_retry_count
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(task_id) DO UPDATE SET
                     target_file_path = excluded.target_file_path,
+                    target_hint_path = excluded.target_hint_path,
+                    resolved_primary_target_path = excluded.resolved_primary_target_path,
+                    resolved_target_files = excluded.resolved_target_files,
+                    resolved_editable_files = excluded.resolved_editable_files,
+                    resolved_context_files = excluded.resolved_context_files,
                     user_prompt = excluded.user_prompt,
                     context_files = excluded.context_files,
                     editable_files = excluded.editable_files,
@@ -66,6 +76,11 @@ class SQLiteCodingTaskStore(CodingTaskStoreProtocol):
                 (
                     record.task_id,
                     record.target_file_path,
+                    record.target_hint_path,
+                    record.resolved_primary_target_path,
+                    self._dump_json(record.resolved_target_files),
+                    self._dump_json(record.resolved_editable_files),
+                    self._dump_json(record.resolved_context_files),
                     record.user_prompt,
                     self._dump_json(record.context_files),
                     self._dump_json(record.editable_files),
@@ -198,6 +213,17 @@ class SQLiteCodingTaskStore(CodingTaskStoreProtocol):
             {
                 "task_id": row["task_id"],
                 "target_file_path": row["target_file_path"],
+                "target_hint_path": row["target_hint_path"],
+                "resolved_primary_target_path": row["resolved_primary_target_path"],
+                "resolved_target_files": self._load_json(
+                    row["resolved_target_files"], []
+                ),
+                "resolved_editable_files": self._load_json(
+                    row["resolved_editable_files"], []
+                ),
+                "resolved_context_files": self._load_json(
+                    row["resolved_context_files"], []
+                ),
                 "user_prompt": row["user_prompt"],
                 "context_files": self._load_json(row["context_files"], []),
                 "editable_files": self._load_json(row["editable_files"], []),

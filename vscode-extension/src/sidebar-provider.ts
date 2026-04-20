@@ -174,11 +174,11 @@ interface CodeTargetState {
 
 interface TaskContext {
     taskId: string | null;
-    absolutePath: string;
-    workspaceFilePath: string;
-    documentVersion: number;
+    absolutePath: string | null;
+    workspaceFilePath: string | null;
+    documentVersion: number | null;
     lineNumber: number | null;
-    originalContent: string;
+    originalContent: string | null;
 }
 
 interface HistoryQueryState {
@@ -821,11 +821,6 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
 
         this.captureFollowableTargetFromActiveEditor();
         const targetState = this.getCodeTargetState();
-        if (!targetState.targetReference) {
-            await this.setCodeState("error", targetState.reason ?? TARGET_REQUIRED_MESSAGE);
-            return;
-        }
-
         const selectionResult = this.resolveRunSelections(targetState);
         if (!selectionResult.ok) {
             await this.setCodeState("error", selectionResult.message);
@@ -893,14 +888,18 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
                 this.appendModelOutput(text);
             },
             onToolCall: async (toolCall) => {
-                this.appendTranscript(`tool_call: ${toolCall.tool_name} ${toolCall.file_path}`);
+                this.appendTranscript(
+                    `tool_call: ${toolCall.tool_name} ${toolCall.file_path ?? toolCall.query ?? ""}`.trim(),
+                );
                 const result = await this.handleToolCall(
                     toolCall,
                     targetState,
                     selectionResult.contextFiles,
                     selectionResult.editableFiles,
                 );
-                this.appendTranscript(`tool_result: ${toolCall.file_path}`);
+                this.appendTranscript(
+                    `tool_result: ${toolCall.file_path ?? toolCall.query ?? toolCall.tool_name}`.trim(),
+                );
                 return result;
             },
             onResult: (result) => {
@@ -936,13 +935,18 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         if (!result.ok) {
             this.currentTaskResult = null;
             this.finalizeThinkingCard();
-            this.pushErrorCard(formatTaskError(result));
-            await this.setCodeState("error", formatTaskError(result));
+            const errorMessage = formatTaskError(result);
+            this.pushErrorCard(errorMessage, result.message ?? errorMessage);
+            await this.setCodeState("error", errorMessage);
             await this.refreshHistory(this.selectedHistoryTaskId);
             return;
         }
 
-        const validationError = validateDraftResult(result.data, taskContext.originalContent);
+        const validationError = validateDraftResult(
+            result.data,
+            taskContext.workspaceFilePath,
+            taskContext.originalContent,
+        );
         if (validationError) {
             this.currentTaskResult = null;
             this.finalizeThinkingCard();
@@ -1063,8 +1067,13 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         this.markLatestDraftReadyApplied();
 
         if (this.shouldRefreshExplainAfterApply()) {
+            const targetWorkspaceFilePath = this.currentTaskContext.workspaceFilePath;
+            if (!targetWorkspaceFilePath) {
+                await this.setCodeState("applied", APPLY_SUCCESS_NO_ENTITY_MESSAGE);
+                return;
+            }
             const refreshResult = await this.apiClient.getEntityByLocation(
-                this.currentTaskContext.workspaceFilePath,
+                targetWorkspaceFilePath,
                 this.currentTaskContext.lineNumber ?? 1,
             );
             if (refreshResult.ok) {
@@ -1366,10 +1375,14 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         contextFiles: SelectedFileReference[],
         editableFiles: SelectedFileReference[],
     ): Promise<CodingTaskToolResultPayload> {
-        if (payload.tool_name !== "view_file") {
+        if (payload.tool_name === "search_workspace") {
+            return this.handleSearchWorkspaceToolCall(payload);
+        }
+
+        if (payload.tool_name !== "view_file" || !payload.file_path) {
             return {
                 call_id: payload.call_id,
-                tool_name: "view_file",
+                tool_name: payload.tool_name,
                 file_path: payload.file_path,
                 error: `Unsupported tool: ${payload.tool_name}`,
             };
@@ -1439,6 +1452,71 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
                 error: formatUnknownError(error),
             };
         }
+    }
+
+    private async handleSearchWorkspaceToolCall(
+        payload: BackendToolCallPayload,
+    ): Promise<CodingTaskToolResultPayload> {
+        const query = payload.query?.trim() ?? "";
+        const limit = Math.max(1, Math.min(payload.limit ?? 8, 20));
+        try {
+            const candidates = await this.listWorkspacePythonFiles();
+            const matches = this.rankWorkspaceFileCandidates(candidates, query)
+                .slice(0, limit)
+                .map((item) => item.workspaceFilePath);
+            return {
+                call_id: payload.call_id,
+                tool_name: "search_workspace",
+                matches,
+                error: null,
+            };
+        } catch (error) {
+            return {
+                call_id: payload.call_id,
+                tool_name: "search_workspace",
+                matches: [],
+                error: formatUnknownError(error),
+            };
+        }
+    }
+
+    private rankWorkspaceFileCandidates(
+        candidates: WorkspaceFileCandidate[],
+        query: string,
+    ): WorkspaceFileCandidate[] {
+        const tokens = query
+            .toLowerCase()
+            .split(/[^a-z0-9_]+/)
+            .map((item) => item.trim())
+            .filter((item) => item.length >= 2);
+        if (tokens.length === 0) {
+            return [...candidates];
+        }
+
+        return [...candidates]
+            .map((candidate) => {
+                const normalizedPath = candidate.workspaceFilePath.toLowerCase();
+                const fileName = path.basename(normalizedPath, ".py");
+                let score = 0;
+                for (const token of tokens) {
+                    if (fileName === token) {
+                        score += 6;
+                    } else if (fileName.includes(token)) {
+                        score += 4;
+                    } else if (normalizedPath.includes(token)) {
+                        score += 2;
+                    }
+                }
+                return { candidate, score };
+            })
+            .filter((item) => item.score > 0)
+            .sort((left, right) => {
+                if (right.score !== left.score) {
+                    return right.score - left.score;
+                }
+                return left.candidate.workspaceFilePath.localeCompare(right.candidate.workspaceFilePath);
+            })
+            .map((item) => item.candidate);
     }
 
     private getCurrentActiveEditorState(): {
@@ -1522,7 +1600,7 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
             if (!this.selectedTargetFilePath) {
                 return {
                     filePath: null,
-                    reason: TARGET_REQUIRED_MESSAGE,
+                    reason: null,
                     selectionMode: "explicit",
                     activeContext: activeState.context,
                     targetContext: null,
@@ -1547,7 +1625,7 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         if (!fallbackTargetPath) {
             return {
                 filePath: activeState.filePath,
-                reason: activeState.reason ?? TARGET_REQUIRED_MESSAGE,
+                reason: null,
                 selectionMode: "follow_active",
                 activeContext: activeState.context,
                 targetContext: activeState.context,
@@ -1663,7 +1741,14 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
     private async buildTaskContext(targetState: CodeTargetState): Promise<TaskContext | null> {
         const targetReference = targetState.targetReference;
         if (!targetReference) {
-            return null;
+            return {
+                taskId: null,
+                absolutePath: null,
+                workspaceFilePath: null,
+                documentVersion: null,
+                lineNumber: null,
+                originalContent: null,
+            };
         }
         const document = await this.openWorkspaceDocument(
             targetReference,
@@ -2261,7 +2346,7 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         });
     }
 
-    private pushErrorCard(message: string): void {
+    private pushErrorCard(message: string, rawMessage?: string | null): void {
         if (!message || !this.currentConversationRunId) {
             return;
         }
@@ -2271,6 +2356,7 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
             runId: this.currentConversationRunId,
             kind: "error",
             message,
+            rawMessage: rawMessage ?? message,
         });
     }
 
@@ -2845,13 +2931,17 @@ function buildConversationViewModel(options: {
                 errorMessage: card.message,
             };
             run.status = "failed";
+            const errorText = summarizeAssistantError(card.message);
             run.messages.push({
                 id: card.id,
                 runId: card.runId,
                 kind: "assistant_error",
-                text: card.message,
+                text: errorText,
                 timestamp: runTimestamp,
-                details: cloneLatestWorkingDetails(run.messages),
+                details: appendErrorDetails(
+                    cloneLatestWorkingDetails(run.messages),
+                    card.rawMessage ?? card.message,
+                ),
                 actions: [],
             });
         }
@@ -2885,7 +2975,7 @@ function ensureAssistantWorkingMessage(
         id: `${run.runId}_assistant_working`,
         runId: run.runId,
         kind: "assistant_working",
-        text: "Working through the request.",
+        text: "I'm working through this change.",
         timestamp,
         details: createEmptyAssistantTurnDetails(),
         actions: [],
@@ -2987,8 +3077,8 @@ function buildAssistantResultPayload(
     card: Extract<CodeTaskCardViewModel, { kind: "draft_ready" }>,
 ): AssistantResultPayload {
     const summary = card.applied
-        ? `Completed the task and applied ${card.fileCount} file change${card.fileCount === 1 ? "" : "s"}.`
-        : `Prepared a verified draft touching ${card.fileCount} file${card.fileCount === 1 ? "" : "s"}.`;
+        ? `I completed the task and applied ${card.fileCount} file change${card.fileCount === 1 ? "" : "s"}.`
+        : `I prepared a verified draft touching ${card.fileCount} file${card.fileCount === 1 ? "" : "s"}.`;
     return {
         summary,
         fileCount: card.fileCount,
@@ -3032,6 +3122,20 @@ function cloneLatestWorkingDetails(
         };
     }
     return null;
+}
+
+function appendErrorDetails(
+    details: AssistantTurnDetails | null,
+    rawError: string,
+): AssistantTurnDetails {
+    const base = details ?? createEmptyAssistantTurnDetails();
+    const nextTrace = [base.rawTranscriptSnippet, `error: ${rawError}`]
+        .filter((item) => item && item.trim().length > 0)
+        .join("\n\n");
+    return {
+        ...base,
+        rawTranscriptSnippet: nextTrace || null,
+    };
 }
 
 function mergeHistoryItems(
@@ -3130,17 +3234,25 @@ function toHistoryDetailViewModel(
 
 function validateDraftResult(
     result: CodingTaskDraftResult,
-    originalContent: string,
+    originalTargetPath: string | null,
+    originalContent: string | null,
 ): string | null {
     const primaryDraft = result.updated_file_content ?? result.verified_files?.[0]?.content ?? "";
     if (!primaryDraft.trim()) {
-        return "Task returned an empty draft.";
+        return "This run did not produce an applicable change.";
     }
-    if (primaryDraft === originalContent) {
-        return "Task did not change the target file.";
+    const resolvedPrimaryPath =
+        result.resolved_primary_target_path ?? result.verified_files?.[0]?.file_path ?? null;
+    if (
+        originalTargetPath &&
+        originalContent &&
+        resolvedPrimaryPath === originalTargetPath &&
+        primaryDraft === originalContent
+    ) {
+        return "This run did not produce an applicable change.";
     }
     if (!result.intent.trim()) {
-        return "Task returned an empty intent.";
+        return "This run did not produce an applicable change.";
     }
     return null;
 }
@@ -3154,7 +3266,7 @@ function formatTaskError(result: ApiResult<unknown>): string {
         return TASK_READY_MESSAGE;
     }
     if (typeof result.message === "string" && result.message.trim().length > 0) {
-        return result.message.trim();
+        return summarizeAssistantError(result.message);
     }
     switch (result.error) {
         case "backend_unavailable":
@@ -3162,8 +3274,26 @@ function formatTaskError(result: ApiResult<unknown>): string {
         case "timeout":
             return "Task request timed out.";
         default:
-            return "Task generation failed.";
+            return "This run did not complete.";
     }
+}
+
+function summarizeAssistantError(message: string): string {
+    const normalized = message.trim();
+    if (
+        normalized === "This run did not produce an applicable change." ||
+        normalized === "Model returned no edits" ||
+        normalized === "Edit plan did not change any editable file" ||
+        normalized === "Task returned an empty draft." ||
+        normalized === "Task did not change the target file." ||
+        normalized === "Task returned an empty intent."
+    ) {
+        return "This run did not produce an applicable change.";
+    }
+    if (!normalized) {
+        return "This run did not complete.";
+    }
+    return "This run did not complete.";
 }
 
 function defaultCodeMessage(status: CodeTaskStatus): string | null {

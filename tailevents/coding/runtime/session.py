@@ -2,6 +2,7 @@
 
 import asyncio
 from dataclasses import dataclass, field
+from typing import Any
 from typing import Optional
 
 from tailevents.coding.context.model import ObservedFileView
@@ -20,7 +21,7 @@ class PendingToolRequest:
     """A pending local tool call waiting on the extension."""
 
     payload: ToolCallPayload
-    future: asyncio.Future[ObservedFileView]
+    future: asyncio.Future[Any]
 
 
 @dataclass
@@ -31,10 +32,17 @@ class TaskRuntimeSession:
     request: CodingTaskCreateRequest
     record: CodingTaskRecord
     llm_client: LLMClientProtocol
+    requested_lanes: set[str]
     editable_paths: set[str]
     readonly_paths: set[str]
-    allowed_files: set[str]
-    expected_versions: dict[str, int]
+    expected_versions: dict[str, Optional[int]]
+    target_hint_path: Optional[str] = None
+    observation_candidates: set[str] = field(default_factory=set)
+    resolved_primary_target_path: Optional[str] = None
+    resolved_target_files: list[str] = field(default_factory=list)
+    resolved_editable_files: list[str] = field(default_factory=list)
+    resolved_context_files: list[str] = field(default_factory=list)
+    scope_summary: Optional[str] = None
     event_sink: RuntimeEventSink = field(default_factory=RuntimeEventSink)
     pending_tool: Optional[PendingToolRequest] = None
     worker: Optional[asyncio.Task] = None

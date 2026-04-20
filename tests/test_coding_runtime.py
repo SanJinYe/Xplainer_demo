@@ -115,29 +115,51 @@ def _build_session(
     task_id = new_task_id()
     record = CodingTaskRecord(
         task_id=task_id,
-        target_file_path=resolved_request.target_file_path,
+        target_file_path=resolved_request.target_file_path or "",
+        target_hint_path=resolved_request.target_file_path,
         user_prompt=resolved_request.user_prompt,
         context_files=list(resolved_request.context_files),
         editable_files=[item.file_path for item in resolved_request.editable_files],
     )
     editable_paths = {
-        resolved_request.target_file_path,
-        *[item.file_path for item in resolved_request.editable_files],
+        item
+        for item in [
+            resolved_request.target_file_path,
+            *[editable.file_path for editable in resolved_request.editable_files],
+        ]
+        if item is not None
     }
     readonly_paths = set(resolved_request.context_files)
-    expected_versions = {resolved_request.target_file_path: resolved_request.target_file_version}
+    expected_versions = {}
+    if resolved_request.target_file_path is not None:
+        expected_versions[resolved_request.target_file_path] = resolved_request.target_file_version
     for editable in resolved_request.editable_files:
         expected_versions[editable.file_path] = editable.document_version
-    return TaskRuntimeSession(
+    session = TaskRuntimeSession(
         task_id=task_id,
         request=resolved_request,
         record=record,
         llm_client=llm_client or FakeLLMClient([]),
+        requested_lanes={"repo_observe", "multi_file"},
         editable_paths=editable_paths,
         readonly_paths=readonly_paths,
-        allowed_files=editable_paths | readonly_paths,
         expected_versions=expected_versions,
+        target_hint_path=resolved_request.target_file_path,
     )
+    ordered_editable_files = [
+        item
+        for item in [
+            resolved_request.target_file_path,
+            *[editable.file_path for editable in resolved_request.editable_files],
+        ]
+        if item is not None
+    ]
+    session.resolved_primary_target_path = resolved_request.target_file_path
+    session.resolved_target_files = list(ordered_editable_files)
+    session.resolved_editable_files = list(ordered_editable_files)
+    session.resolved_context_files = list(resolved_request.context_files)
+    session.scope_summary = "Resolved scope from explicit target and selected file hints."
+    return session
 
 
 async def _record_step(
@@ -278,11 +300,18 @@ def test_coding_prompt_builder_preserves_prompt_shape():
         ],
     )
 
-    user_prompt = builder.build_user_prompt(request, bundle, "bad edit")
+    user_prompt = builder.build_user_prompt(
+        request,
+        bundle,
+        "bad edit",
+        primary_target_path="pkg/demo.py",
+        scope_summary="Resolved scope from explicit target and selected file hints.",
+    )
 
     assert builder.build_system_prompt() == SYSTEM_PROMPT
     assert "Task goal:\nChange the return value to 1" in user_prompt
-    assert "Primary target file:\npkg/demo.py" in user_prompt
+    assert "Resolved primary target file:\npkg/demo.py" in user_prompt
+    assert "Resolved scope:\nResolved scope from explicit target and selected file hints." in user_prompt
     assert "<editable_file path=\"pkg/demo.py\">" in user_prompt
     assert "<context_file path=\"pkg/context.py\">" in user_prompt
     assert "Previous failure to fix:\nbad edit" in user_prompt
