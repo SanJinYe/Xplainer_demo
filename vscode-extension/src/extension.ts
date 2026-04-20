@@ -193,6 +193,30 @@ export function activate(context: vscode.ExtensionContext): void {
                 }
                 return false;
             },
+            openDiffView: async (workspaceFilePath, content) => {
+                const folders = vscode.workspace.workspaceFolders ?? [];
+                for (const folder of folders) {
+                    const candidate = path.join(folder.uri.fsPath, workspaceFilePath);
+                    if (!existsSync(candidate)) {
+                        continue;
+                    }
+                    const originalUri = vscode.Uri.file(candidate);
+                    const originalDocument = await vscode.workspace.openTextDocument(originalUri);
+                    const draftDocument = await vscode.workspace.openTextDocument({
+                        content,
+                        language: originalDocument.languageId,
+                    });
+                    await vscode.commands.executeCommand(
+                        "vscode.diff",
+                        originalDocument.uri,
+                        draftDocument.uri,
+                        `Draft Diff: ${workspaceFilePath}`,
+                        { preview: false },
+                    );
+                    return true;
+                }
+                return false;
+            },
             executeCommand: async (command) => vscode.commands.executeCommand(command),
         },
     });

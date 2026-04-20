@@ -11,7 +11,7 @@ It records structured change events, maps them to code entities with AST indexin
 - dual-source external doc retrieval for explanations (`pydoc` + authorized workspace docs)
 - persistent coding-task history, replay preparation, verified drafts, and apply confirmation
 - separate effective `Code` and `Explain` profile selection, with `Explain` following `Code` by default
-- a React-based VS Code webview with dedicated `Explain`, `Code`, `History`, and `Profiles` views
+- a React-based VS Code webview with dedicated `Explain`, `Code`, and `History` views plus a secondary `ProfilePanel`
 
 The repository keeps the shipped product surface only. Local plans, tests, progress logs, and private notes stay out of version control.
 
@@ -70,9 +70,9 @@ Coding Agent / Baseline Onboarding
 ### Code
 
 - The extension starts a backend-orchestrated coding task from a workspace Python target, defaulting to the active file but allowing an explicit target plus up to 3 readonly context files and 1 additional editable file
-- The extension webview is split into `Explain`, `Code`, `History`, and `Profiles` views, while the extension host keeps backend/API orchestration and state aggregation
-- The `Code` view uses a prompt-first layout with compact target metadata, profile/capability cards, inline file pickers, transcript/model-output panels, and per-file draft rendering
-- Target control supports `Use Active File`, `Use Explain File as Target`, and `Back to Explain Entity` without leaving the sidebar workflow
+- The extension webview is split into `Explain`, `Code`, and `History` views, while the extension host keeps backend/API orchestration and state aggregation and exposes profiles through a secondary `ProfilePanel`
+- The `Code` view now uses a chat-native conversation surface: user turns, assistant working turns, assistant results, and assistant errors are the primary UI, while reasoning, tool trace, and file changes live behind expandable details
+- Target control still supports explicit `Use Explain File as Target` and `Back to Explain Entity`, but the active editor is treated as the default hint instead of the main visible workflow control
 - The backend drives a constrained tool loop and returns verified drafts per file
 - Only a verified draft can be applied
 - Accepted drafts are written back through one workspace edit and then confirmed to the backend for event persistence
@@ -178,6 +178,7 @@ For extension development, open the repo in VS Code and start the extension host
 - Python is the only indexed language today
 - Profile definitions and selection are still command-driven; the sidebar shows effective state but does not provide an inline profile editor
 - The React webview is now the default sidebar shell, but `tailEvents.legacyWebview` still exists as a temporary rollback switch
+- The shipped `Code` surface is now conversation-first on the frontend, but the backend runtime is still target-file-first and has not yet moved to autonomous scope selection
 - `mcp` and `skills` are capability placeholders and currently report `not implemented in Phase 4`
 - Graph support is intentionally limited to `subgraph` and `impact-paths`; graph cache, community detection, cycle reports, and importance ranking are not shipped
 - The current `Global Impact` surface is best-effort and bounded; deeper graph semantics are intentionally deferred

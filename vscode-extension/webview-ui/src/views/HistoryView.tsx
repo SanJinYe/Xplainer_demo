@@ -17,11 +17,11 @@ const HISTORY_STATUS_OPTIONS = [
 
 export function HistoryView() {
     const { state, actions } = useWebviewState();
-    const data = state.codeState;
+    const data = state.historyState.data;
 
     if (!data) {
         return (
-            <div className="flex h-full items-center justify-center p-6">
+            <div className="flex min-h-full items-center justify-center p-6">
                 <p className="text-sm text-[var(--te-muted)]">Waiting for history state.</p>
             </div>
         );
@@ -30,8 +30,8 @@ export function HistoryView() {
     const detail = data.historyDetail;
 
     return (
-        <div className="flex h-full flex-col gap-4 overflow-y-auto p-4">
-            <section className="rounded-[18px] border border-[var(--te-border)] bg-[var(--te-bg)] px-4 py-4">
+        <div className="flex min-h-full flex-col gap-3 px-3 py-3">
+            <section className="rounded-[16px] border border-[var(--te-border)] bg-[var(--te-bg)] px-3 py-3">
                 <div className="grid gap-3 xl:grid-cols-[180px_1fr_auto]">
                     <label className="space-y-2 text-sm">
                         <span className="font-medium">Status</span>
@@ -105,128 +105,126 @@ export function HistoryView() {
                 ) : null}
             </section>
 
-            <div className="grid min-h-0 gap-4 xl:grid-cols-[0.95fr_1.05fr]">
-                <section className="space-y-3">
-                    {data.historyItems.length === 0 ? (
-                        <div className="rounded-[18px] border border-[var(--te-border)] bg-[var(--te-surface)] px-4 py-6 text-sm text-[var(--te-muted)]">
-                            No task history yet.
-                        </div>
-                    ) : (
-                        data.historyItems.map((item) => {
-                            return (
-                                <button
-                                    key={item.taskId}
-                                    type="button"
-                                    className="w-full rounded-[18px] border border-[var(--te-border)] bg-[var(--te-bg)] px-4 py-4 text-left"
-                                    onClick={() => actions.send({ type: "selectHistoryTask", taskId: item.taskId })}
-                                >
-                                    <div className="flex items-start justify-between gap-3">
-                                        <div className="min-w-0">
-                                            <p className="truncate text-sm font-semibold">{item.targetFilePath}</p>
-                                            <p className="mt-1 text-xs text-[var(--te-muted)]">{item.userPrompt}</p>
-                                        </div>
-                                        <div className="flex flex-col items-end gap-2">
-                                            <Badge variant={item.selected ? "accent" : "subtle"}>{item.status}</Badge>
-                                            <span className="text-[11px] text-[var(--te-muted)]">{item.updatedAt}</span>
-                                        </div>
+            <section className="space-y-3">
+                {data.historyItems.length === 0 ? (
+                    <div className="rounded-[16px] border border-[var(--te-border)] bg-[var(--te-surface)] px-4 py-5 text-sm text-[var(--te-muted)]">
+                        No task history yet.
+                    </div>
+                ) : (
+                    data.historyItems.map((item) => {
+                        return (
+                            <button
+                                key={item.taskId}
+                                type="button"
+                                className="w-full rounded-[16px] border border-[var(--te-border)] bg-[var(--te-bg)] px-3 py-3 text-left"
+                                onClick={() => actions.send({ type: "selectHistoryTask", taskId: item.taskId })}
+                            >
+                                <div className="flex items-start justify-between gap-3">
+                                    <div className="min-w-0">
+                                        <p className="truncate text-sm font-semibold">{item.targetFilePath}</p>
+                                        <p className="mt-1 text-xs text-[var(--te-muted)]">{item.userPrompt}</p>
                                     </div>
-                                </button>
-                            );
-                        })
-                    )}
-                </section>
+                                    <div className="flex flex-col items-end gap-2">
+                                        <Badge variant={item.selected ? "accent" : "subtle"}>{item.status}</Badge>
+                                        <span className="text-[11px] text-[var(--te-muted)]">{item.updatedAt}</span>
+                                    </div>
+                                </div>
+                            </button>
+                        );
+                    })
+                )}
+            </section>
 
-                <section className="space-y-4">
-                    {detail ? (
-                        <>
-                            <section className="rounded-[18px] border border-[var(--te-border)] bg-[var(--te-bg)] px-4 py-4">
-                                <div className="flex flex-wrap items-start justify-between gap-3">
-                                    <div className="space-y-2">
-                                        <div className="flex flex-wrap items-center gap-2">
-                                            <h2 className="text-lg font-semibold">{detail.targetFilePath}</h2>
-                                            <Badge>{detail.status}</Badge>
-                                            <Badge variant="subtle">{detail.launchMode}</Badge>
-                                        </div>
-                                        <p className="text-sm text-[var(--te-muted)]">{detail.userPrompt}</p>
+            <section className="space-y-4">
+                {detail ? (
+                    <>
+                        <section className="rounded-[16px] border border-[var(--te-border)] bg-[var(--te-bg)] px-3 py-3">
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div className="space-y-2">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        <h2 className="text-lg font-semibold">{detail.targetFilePath}</h2>
+                                        <Badge>{detail.status}</Badge>
+                                        <Badge variant="subtle">{detail.launchMode}</Badge>
                                     </div>
-                                    <div className="flex flex-wrap gap-2">
-                                        <Button
-                                            variant="ghost"
-                                            onClick={() => actions.send({ type: "reuseHistoryTask", taskId: detail.taskId })}
-                                        >
-                                            Reuse
-                                        </Button>
-                                        <Button
-                                            variant="primary"
-                                            onClick={() => actions.send({ type: "replayHistoryTask", taskId: detail.taskId })}
-                                        >
-                                            Replay
-                                        </Button>
-                                    </div>
+                                    <p className="text-sm text-[var(--te-muted)]">{detail.userPrompt}</p>
                                 </div>
-                                <div className="mt-4 flex flex-wrap gap-2">
-                                    {detail.selectedProfileId ? (
-                                        <Badge variant="accent">{detail.selectedProfileId}</Badge>
-                                    ) : null}
-                                    {detail.requestedCapabilities.map((item) => {
-                                        return <Badge key={item} variant="subtle">{item}</Badge>;
-                                    })}
+                                <div className="flex flex-wrap gap-2">
+                                    <Button
+                                        variant="ghost"
+                                        onClick={() => actions.send({ type: "reuseHistoryTask", taskId: detail.taskId })}
+                                    >
+                                        Reuse
+                                    </Button>
+                                    <Button
+                                        variant="primary"
+                                        onClick={() => actions.send({ type: "replayHistoryTask", taskId: detail.taskId })}
+                                    >
+                                        Replay
+                                    </Button>
                                 </div>
-                                {detail.lastError ? (
-                                    <p className="mt-4 text-sm text-[var(--te-danger)]">{detail.lastError}</p>
+                            </div>
+                            <div className="mt-4 flex flex-wrap gap-2">
+                                {detail.selectedProfileId ? (
+                                    <Badge variant="accent">{detail.selectedProfileId}</Badge>
                                 ) : null}
-                            </section>
+                                {detail.requestedCapabilities.map((item) => {
+                                    return <Badge key={item} variant="subtle">{item}</Badge>;
+                                })}
+                            </div>
+                            {detail.lastError ? (
+                                <p className="mt-4 text-sm text-[var(--te-danger)]">{detail.lastError}</p>
+                            ) : null}
+                        </section>
 
-                            <CollapsibleCard
-                                id="history.steps"
-                                title="Structured Steps"
-                                description="History detail keeps step semantics instead of only flattened transcript."
-                                open={!state.ui.collapsedPanels["history.steps"]}
-                                onOpenChange={(open) => actions.setPanelCollapsed("history.steps", !open)}
-                            >
-                                <StepList steps={detail.steps} />
-                            </CollapsibleCard>
+                        <CollapsibleCard
+                            id="history.steps"
+                            title="Structured Steps"
+                            description="History detail keeps step semantics instead of only flattened transcript."
+                            open={!state.persisted.collapsedPanels["history.steps"]}
+                            onOpenChange={(open) => actions.setPanelCollapsed("history.steps", !open)}
+                        >
+                            <StepList steps={detail.steps} />
+                        </CollapsibleCard>
 
-                            <CollapsibleCard
-                                id="history.draft"
-                                title="Draft Files"
-                                description="History uses text-only draft rendering when no reliable base content exists."
-                                open={!state.ui.collapsedPanels["history.draft"]}
-                                onOpenChange={(open) => actions.setPanelCollapsed("history.draft", !open)}
-                            >
-                                <DraftFilesPanel
-                                    draftFiles={detail.draftFiles}
-                                    onOpenFile={(path) => actions.send({ type: "openWorkspaceFile", path })}
-                                />
-                            </CollapsibleCard>
+                        <CollapsibleCard
+                            id="history.draft"
+                            title="Draft Files"
+                            description="History uses text-only draft rendering when no reliable base content exists."
+                            open={!state.persisted.collapsedPanels["history.draft"]}
+                            onOpenChange={(open) => actions.setPanelCollapsed("history.draft", !open)}
+                        >
+                            <DraftFilesPanel
+                                draftFiles={detail.draftFiles}
+                                onOpenFile={(path) => actions.send({ type: "openWorkspaceFile", path })}
+                            />
+                        </CollapsibleCard>
 
-                            <CollapsibleCard
-                                id="history.details"
-                                title="Technical Detail"
-                                description="Transcript, model output, and apply metadata remain available."
-                                open={!state.ui.collapsedPanels["history.details"]}
-                                onOpenChange={(open) => actions.setPanelCollapsed("history.details", !open)}
-                            >
-                                <div className="space-y-4">
-                                    <pre className="overflow-x-auto whitespace-pre-wrap rounded-2xl border border-[var(--te-border)] bg-[var(--te-bg)] p-3 text-xs leading-6">
-                                        {detail.transcriptText || "No transcript."}
-                                    </pre>
-                                    <pre className="overflow-x-auto whitespace-pre-wrap rounded-2xl border border-[var(--te-border)] bg-[var(--te-bg)] p-3 text-xs leading-6">
-                                        {detail.modelOutputText || "No model output."}
-                                    </pre>
-                                    <pre className="overflow-x-auto whitespace-pre-wrap rounded-2xl border border-[var(--te-border)] bg-[var(--te-bg)] p-3 text-xs leading-6">
-                                        {detail.draftText || "No draft text."}
-                                    </pre>
-                                </div>
-                            </CollapsibleCard>
-                        </>
-                    ) : (
-                        <div className="rounded-[18px] border border-[var(--te-border)] bg-[var(--te-surface)] px-4 py-6 text-sm text-[var(--te-muted)]">
-                            Select a task to inspect its history detail.
-                        </div>
-                    )}
-                </section>
-            </div>
+                        <CollapsibleCard
+                            id="history.details"
+                            title="Technical Detail"
+                            description="Transcript, model output, and apply metadata remain available."
+                            open={!state.persisted.collapsedPanels["history.details"]}
+                            onOpenChange={(open) => actions.setPanelCollapsed("history.details", !open)}
+                        >
+                            <div className="space-y-4">
+                                <pre className="overflow-x-auto whitespace-pre-wrap rounded-2xl border border-[var(--te-border)] bg-[var(--te-bg)] p-3 text-xs leading-6">
+                                    {detail.transcriptText || "No transcript."}
+                                </pre>
+                                <pre className="overflow-x-auto whitespace-pre-wrap rounded-2xl border border-[var(--te-border)] bg-[var(--te-bg)] p-3 text-xs leading-6">
+                                    {detail.modelOutputText || "No model output."}
+                                </pre>
+                                <pre className="overflow-x-auto whitespace-pre-wrap rounded-2xl border border-[var(--te-border)] bg-[var(--te-bg)] p-3 text-xs leading-6">
+                                    {detail.draftText || "No draft text."}
+                                </pre>
+                            </div>
+                        </CollapsibleCard>
+                    </>
+                ) : (
+                    <div className="rounded-[16px] border border-[var(--te-border)] bg-[var(--te-surface)] px-4 py-5 text-sm text-[var(--te-muted)]">
+                        Select a task to inspect its history detail.
+                    </div>
+                )}
+            </section>
         </div>
     );
 }

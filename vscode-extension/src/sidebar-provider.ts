@@ -16,17 +16,27 @@ import type {
     ApiResult,
     BackendCodingCapabilitiesResponse,
     BackendCodingTaskHistoryDetail,
+    BackendCodingTaskHistoryItem,
     BackendEntityExplanation,
     BackendGlobalImpactPath,
     BackendExplanationStreamInit,
     BackendTailEvent,
     BackendTaskStepEvent,
     BackendToolCallPayload,
+    AssistantFileChangeViewModel,
+    AssistantResultPayload,
+    AssistantTurnDetails,
+    AssistantToolTraceItemViewModel,
     CodeExplainEntityViewModel,
+    CodeConversationMessageViewModel,
+    CodeConversationRunViewModel,
+    CodeConversationViewModel,
     CodeHistoryFiltersViewModel,
     CodeHistoryPageViewModel,
     CodePickerKind,
     CodePickerViewModel,
+    CodeTaskCardDraftFileViewModel,
+    CodeTaskCardViewModel,
     CodeTaskStatus,
     CodeViewModel,
     DraftFileViewModel,
@@ -38,6 +48,8 @@ import type {
     CodingTaskRequestedCapability,
     CodingTaskDraftResult,
     CodingTaskToolResultPayload,
+    MessageActionViewModel,
+    RecentTaskSummaryViewModel,
     RelatedEntityViewModel,
     SidebarMessageFromWebview,
     SidebarMessageToWebview,
@@ -104,6 +116,7 @@ interface SidebarRuntime {
         files: Array<{ workspaceFilePath: string; absolutePath: string; content: string }>,
     ) => Promise<boolean>;
     openWorkspaceFile?: (workspaceFilePath: string) => Promise<boolean>;
+    openDiffView?: (workspaceFilePath: string, content: string) => Promise<boolean>;
     executeCommand?: (command: string) => Promise<unknown>;
 }
 
@@ -229,6 +242,10 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
 
     private codeDraftText = "";
 
+    private codeTaskCards: CodeTaskCardViewModel[] = [];
+
+    private recentTaskSummaries: RecentTaskSummaryViewModel[] = [];
+
     private codeMessage: string | null = null;
 
     private codeHistoryLoading = false;
@@ -295,6 +312,14 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
     };
 
     private codeModelAttempt = 0;
+
+    private currentConversationRunId: string | null = null;
+
+    private currentThinkingCardId: string | null = null;
+
+    private currentLatestEditCardId: string | null = null;
+
+    private nextTaskCardOrdinal = 0;
 
     private lastExplainState: SidebarMessageToWebview = {
         type: "state:empty",
@@ -526,6 +551,13 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
             case "openWorkspaceFile":
                 await this.openWorkspaceFile(message.path);
                 return;
+            case "openDiffView":
+                await this.openDiffView(message.path);
+                return;
+            case "clearCodeConversation":
+                this.clearCodeConversation();
+                await this.postCodeState();
+                return;
             case "setCodePickerOpen":
                 await this.setCodePickerOpen(message.kind, message.open);
                 return;
@@ -584,6 +616,9 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
                 return;
             case "selectExplainProfile":
                 await this.runtime.executeCommand?.("tailEvents.selectExplainProfile");
+                return;
+            case "onboardRepository":
+                await this.runtime.executeCommand?.("tailEvents.onboardRepository");
                 return;
             case "setHistoryStatusFilter":
                 await this.setHistoryStatusFilter(message.status);
@@ -830,6 +865,7 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         const pendingReplaySourceTaskId = this.pendingReplaySourceTaskId;
         this.currentTaskLaunchMode = pendingReplaySourceTaskId ? "replay" : "new";
         this.currentTaskSourceTaskId = pendingReplaySourceTaskId;
+        this.beginConversationRun(trimmedPrompt, targetState);
         await this.setCodeState("running", TASK_RUNNING_MESSAGE);
 
         const handlers: CodingTaskSessionHandlers = {
@@ -844,13 +880,16 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
                 this.appendTranscript(`status: ${status}`);
             },
             onStep: (step) => {
+                this.finalizeThinkingCard();
                 if (step.step_kind === "edit" && step.status === "started") {
                     this.codeModelAttempt += 1;
                     this.appendModelOutput(`--- attempt ${this.codeModelAttempt} ---\n`);
                 }
+                this.appendStepCard(step);
                 this.appendTranscript(formatStepTranscript(step));
             },
             onModelDelta: (text) => {
+                this.appendThinkingDelta(text);
                 this.appendModelOutput(text);
             },
             onToolCall: async (toolCall) => {
@@ -867,6 +906,8 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
             onResult: (result) => {
                 this.currentTaskResult = result;
                 this.codeDraftText = resolveDraftText(result);
+                this.finalizeThinkingCard();
+                void this.attachDraftFilesToConversation();
                 this.appendTranscript("result: verified draft ready");
             },
         };
@@ -894,6 +935,8 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
 
         if (!result.ok) {
             this.currentTaskResult = null;
+            this.finalizeThinkingCard();
+            this.pushErrorCard(formatTaskError(result));
             await this.setCodeState("error", formatTaskError(result));
             await this.refreshHistory(this.selectedHistoryTaskId);
             return;
@@ -902,6 +945,8 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         const validationError = validateDraftResult(result.data, taskContext.originalContent);
         if (validationError) {
             this.currentTaskResult = null;
+            this.finalizeThinkingCard();
+            this.pushErrorCard(validationError);
             await this.setCodeState("error", validationError);
             await this.refreshHistory(this.selectedHistoryTaskId);
             return;
@@ -910,6 +955,8 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         this.currentTaskResult = result.data;
         this.pendingReplaySourceTaskId = null;
         this.codeDraftText = resolveDraftText(result.data);
+        await this.attachDraftFilesToConversation();
+        await this.pushDraftReadyCard(result.data.task_id);
         await this.setCodeState("ready_to_apply", TASK_READY_MESSAGE);
         await this.refreshHistory(result.data.task_id);
     }
@@ -918,6 +965,7 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         const controller = this.currentTaskAbortController;
         this.currentTaskAbortController = null;
         controller?.abort();
+        this.finalizeThinkingCard();
 
         const taskId = this.currentTaskContext?.taskId;
         if (taskId) {
@@ -926,18 +974,21 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
 
         this.currentTaskResult = null;
         this.codeDraftText = "";
+        this.pushErrorCard(TASK_CANCELLED_MESSAGE);
         await this.setCodeState("idle", TASK_CANCELLED_MESSAGE);
         await this.refreshHistory(taskId ?? this.selectedHistoryTaskId);
     }
 
     private async applyTask(): Promise<void> {
         if (!this.currentTaskContext || !this.currentTaskResult) {
+            this.pushErrorCard(APPLY_FAILED_MESSAGE);
             await this.setCodeState("error", APPLY_FAILED_MESSAGE);
             return;
         }
 
         const verifiedFiles = this.currentTaskResult.verified_files ?? [];
         if (verifiedFiles.length === 0) {
+            this.pushErrorCard(APPLY_FAILED_MESSAGE);
             await this.setCodeState("error", APPLY_FAILED_MESSAGE);
             return;
         }
@@ -945,6 +996,7 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         const precheckMessage = await this.precheckVerifiedFiles(verifiedFiles);
         if (precheckMessage) {
             this.currentTaskResult = null;
+            this.pushErrorCard(precheckMessage);
             await this.setCodeState("error", precheckMessage);
             return;
         }
@@ -970,12 +1022,14 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
                 return item !== null;
             });
         if (filesToApply.length !== verifiedFiles.length) {
+            this.pushErrorCard(APPLY_FAILED_MESSAGE);
             await this.setCodeState("error", APPLY_FAILED_MESSAGE);
             return;
         }
 
         const applied = await this.runtime.applyVerifiedFiles?.(filesToApply);
         if (!applied) {
+            this.pushErrorCard(APPLY_FAILED_MESSAGE);
             await this.setCodeState("error", APPLY_FAILED_MESSAGE);
             return;
         }
@@ -993,6 +1047,7 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         await this.refreshHistory(this.currentTaskResult.task_id);
 
         if (!appliedResult.ok) {
+            this.pushErrorCard(APPLY_HISTORY_FAILED_MESSAGE);
             await this.setCodeState("error", APPLY_HISTORY_FAILED_MESSAGE);
             return;
         }
@@ -1005,6 +1060,7 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         } else {
             await this.setCodeState("applied", APPLY_SUCCESS_MESSAGE);
         }
+        this.markLatestDraftReadyApplied();
 
         if (this.shouldRefreshExplainAfterApply()) {
             const refreshResult = await this.apiClient.getEntityByLocation(
@@ -1049,6 +1105,13 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
             },
             controller.signal,
         );
+        const recentTasksResult = await this.apiClient.getCodingTaskHistory(
+            {
+                limit: 5,
+                offset: 0,
+            },
+            controller.signal,
+        );
         if (
             this.currentHistoryAbortController !== controller ||
             controller.signal.aborted ||
@@ -1063,6 +1126,8 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
             await this.postCodeState();
             return;
         }
+
+        this.recentTaskSummaries = buildRecentTaskSummaries(recentTasksResult);
 
         const historyPage = Array.isArray(historyResult.data)
             ? {
@@ -1951,6 +2016,264 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         return this.profileStateStore.getCapabilities();
     }
 
+    private beginConversationRun(
+        prompt: string,
+        targetState: CodeTargetState,
+    ): void {
+        const runId = this.createConversationRunId();
+        const timestamp = new Date().toISOString();
+        this.currentConversationRunId = runId;
+        this.currentThinkingCardId = null;
+        this.currentLatestEditCardId = null;
+
+        this.pushCodeTaskCard({
+            id: this.createTaskCardId(runId, "run_marker"),
+            runId,
+            kind: "run_marker",
+            targetFilePath: targetState.filePath,
+            timestamp,
+            launchMode: this.currentTaskLaunchMode,
+            sourceTaskId: this.currentTaskSourceTaskId,
+        });
+        this.pushCodeTaskCard({
+            id: this.createTaskCardId(runId, "user_message"),
+            runId,
+            kind: "user_message",
+            prompt,
+            targetFilePath: targetState.filePath,
+            contextFiles: [...this.selectedContextFiles],
+            editableFiles: [...this.selectedEditableFiles],
+        });
+    }
+
+    private createConversationRunId(): string {
+        this.nextTaskCardOrdinal += 1;
+        return `run_${Date.now()}_${this.nextTaskCardOrdinal}`;
+    }
+
+    private createTaskCardId(runId: string, kind: CodeTaskCardViewModel["kind"]): string {
+        this.nextTaskCardOrdinal += 1;
+        return `${runId}_${kind}_${this.nextTaskCardOrdinal}`;
+    }
+
+    private pushCodeTaskCard(card: CodeTaskCardViewModel): void {
+        this.codeTaskCards = [...this.codeTaskCards, card];
+    }
+
+    private updateCodeTaskCard(
+        cardId: string,
+        updater: (card: CodeTaskCardViewModel) => CodeTaskCardViewModel,
+    ): void {
+        this.codeTaskCards = this.codeTaskCards.map((card) => {
+            if (card.id !== cardId) {
+                return card;
+            }
+            return updater(card);
+        });
+    }
+
+    private clearCodeConversation(): void {
+        this.codeTaskCards = [];
+        this.currentConversationRunId = null;
+        this.currentThinkingCardId = null;
+        this.currentLatestEditCardId = null;
+    }
+
+    private appendThinkingDelta(text: string): void {
+        if (!text || !this.currentConversationRunId) {
+            return;
+        }
+        if (!this.currentThinkingCardId) {
+            this.currentThinkingCardId = this.createTaskCardId(this.currentConversationRunId, "thinking");
+            this.pushCodeTaskCard({
+                id: this.currentThinkingCardId,
+                runId: this.currentConversationRunId,
+                kind: "thinking",
+                text,
+                streaming: true,
+            });
+            return;
+        }
+        this.updateCodeTaskCard(this.currentThinkingCardId, (card) => {
+            if (card.kind !== "thinking") {
+                return card;
+            }
+            return {
+                ...card,
+                text: `${card.text}${text}`,
+                streaming: true,
+            };
+        });
+    }
+
+    private finalizeThinkingCard(): void {
+        if (!this.currentThinkingCardId) {
+            return;
+        }
+        const thinkingCardId = this.currentThinkingCardId;
+        this.currentThinkingCardId = null;
+        this.updateCodeTaskCard(thinkingCardId, (card) => {
+            if (card.kind !== "thinking") {
+                return card;
+            }
+            return {
+                ...card,
+                streaming: false,
+            };
+        });
+    }
+
+    private appendStepCard(step: BackendTaskStepEvent): void {
+        if (!this.currentConversationRunId) {
+            return;
+        }
+        if (step.step_kind === "view") {
+            const cardId = `${this.currentConversationRunId}_tool_${step.step_id}`;
+            const existing = this.codeTaskCards.find((item) => item.id === cardId);
+            const card = {
+                id: cardId,
+                runId: this.currentConversationRunId,
+                kind: "tool_call" as const,
+                stepId: step.step_id,
+                toolName: step.tool_name ?? "view_file",
+                filePath: step.file_path,
+                status: step.status,
+                summary: step.output_summary ?? step.input_summary ?? step.intent,
+            };
+            if (existing) {
+                this.updateCodeTaskCard(cardId, () => card);
+            } else {
+                this.pushCodeTaskCard(card);
+            }
+            return;
+        }
+        if (step.step_kind === "edit") {
+            const cardId = `${this.currentConversationRunId}_edit_${step.step_id}`;
+            this.currentLatestEditCardId = cardId;
+            const existing = this.codeTaskCards.find((item) => item.id === cardId);
+            const card = {
+                id: cardId,
+                runId: this.currentConversationRunId,
+                kind: "file_change" as const,
+                stepId: step.step_id,
+                filePath: step.file_path,
+                status: step.status,
+                summary: step.output_summary ?? step.reasoning_summary ?? step.intent,
+                draftFiles: [],
+                diffAvailable: false,
+            };
+            if (existing) {
+                this.updateCodeTaskCard(cardId, () => card);
+            } else {
+                this.pushCodeTaskCard(card);
+            }
+            return;
+        }
+        const cardId = `${this.currentConversationRunId}_verify_${step.step_id}`;
+        const existing = this.codeTaskCards.find((item) => item.id === cardId);
+        const card = {
+            id: cardId,
+            runId: this.currentConversationRunId,
+            kind: "verify" as const,
+            stepId: step.step_id,
+            filePath: step.file_path,
+            status: step.status,
+            summary: step.output_summary ?? step.reasoning_summary ?? step.intent,
+        };
+        if (existing) {
+            this.updateCodeTaskCard(cardId, () => card);
+        } else {
+            this.pushCodeTaskCard(card);
+        }
+    }
+
+    private async attachDraftFilesToConversation(): Promise<CodeTaskCardDraftFileViewModel[]> {
+        const targetState = this.getCodeTargetState();
+        const draftFiles = await this.buildCurrentDraftFiles(targetState.activeContext);
+        const taskDraftFiles = draftFiles.map((item) => {
+            return {
+                filePath: item.filePath,
+                content: item.content,
+                baseContent: item.baseContent,
+                baseSource: item.baseSource,
+            };
+        });
+        if (!this.currentLatestEditCardId) {
+            return taskDraftFiles;
+        }
+        this.updateCodeTaskCard(this.currentLatestEditCardId, (card) => {
+            if (card.kind !== "file_change") {
+                return card;
+            }
+            const matchingDraftFiles = taskDraftFiles.filter((item) => item.filePath === card.filePath);
+            const nextDraftFiles = matchingDraftFiles.length > 0 ? matchingDraftFiles : taskDraftFiles;
+            return {
+                ...card,
+                draftFiles: nextDraftFiles,
+                diffAvailable: nextDraftFiles.some((item) => item.baseSource === "workspace_live"),
+            };
+        });
+        return taskDraftFiles;
+    }
+
+    private async pushDraftReadyCard(taskId: string): Promise<void> {
+        if (!this.currentConversationRunId) {
+            return;
+        }
+        const draftFiles = await this.attachDraftFilesToConversation();
+        const cardId = `${this.currentConversationRunId}_draft_ready`;
+        const card = {
+            id: cardId,
+            runId: this.currentConversationRunId,
+            kind: "draft_ready" as const,
+            taskId,
+            fileCount: draftFiles.length,
+            files: draftFiles.map((item) => {
+                return {
+                    filePath: item.filePath,
+                    diffAvailable: item.baseSource === "workspace_live",
+                };
+            }),
+            draftFiles,
+            applied: false,
+        };
+        const existing = this.codeTaskCards.find((item) => item.id === cardId);
+        if (existing) {
+            this.updateCodeTaskCard(cardId, () => card);
+        } else {
+            this.pushCodeTaskCard(card);
+        }
+    }
+
+    private markLatestDraftReadyApplied(): void {
+        if (!this.currentConversationRunId) {
+            return;
+        }
+        const cardId = `${this.currentConversationRunId}_draft_ready`;
+        this.updateCodeTaskCard(cardId, (card) => {
+            if (card.kind !== "draft_ready") {
+                return card;
+            }
+            return {
+                ...card,
+                applied: true,
+            };
+        });
+    }
+
+    private pushErrorCard(message: string): void {
+        if (!message || !this.currentConversationRunId) {
+            return;
+        }
+        this.finalizeThinkingCard();
+        this.pushCodeTaskCard({
+            id: this.createTaskCardId(this.currentConversationRunId, "error"),
+            runId: this.currentConversationRunId,
+            kind: "error",
+            message,
+        });
+    }
+
     private appendTranscript(line: string): void {
         if (!line) {
             return;
@@ -1984,6 +2307,13 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
         const explainProfile = this.getExplainEffectiveProfile();
         const capabilitySummary = buildCapabilitySummary(this.getCapabilitySnapshot());
         const draftFiles = await this.buildCurrentDraftFiles(targetState.activeContext);
+        const conversation = buildConversationViewModel({
+            taskCards: this.codeTaskCards,
+            status: this.codeStatus,
+            recentTasks: this.recentTaskSummaries,
+            composerHintTarget: targetState.filePath,
+            composerContextFiles: this.selectedContextFiles,
+        });
         const data: CodeViewModel = {
             filePath: targetState.filePath,
             targetSelectionMode: targetState.selectionMode,
@@ -2000,13 +2330,13 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
             modelOutputText: this.codeModelOutputText,
             draftText: this.codeDraftText,
             draftFiles,
+            conversation,
             message:
                 this.codeMessage ??
                 codeProfile.reason ??
                 targetState.reason ??
                 defaultCodeMessage(this.codeStatus),
             canRun:
-                targetState.targetReference !== null &&
                 codeProfile.available &&
                 this.codeStatus !== "running" &&
                 this.codeStatus !== "applying",
@@ -2140,6 +2470,41 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
             return;
         }
         await this.runtime.openWorkspaceFile?.(reference.workspaceFilePath);
+    }
+
+    private async openDiffView(workspaceFilePath: string): Promise<void> {
+        if (!isSafeWorkspaceFilePath(workspaceFilePath)) {
+            return;
+        }
+        const reference = this.resolveFileReference(workspaceFilePath);
+        if (!reference) {
+            return;
+        }
+        const draftContent = this.findLatestDraftContentForPath(workspaceFilePath);
+        if (draftContent === null) {
+            return;
+        }
+        await this.runtime.openDiffView?.(reference.workspaceFilePath, draftContent);
+    }
+
+    private findLatestDraftContentForPath(workspaceFilePath: string): string | null {
+        const currentDraft = this.currentTaskResult?.verified_files?.find((item) => {
+            return item.file_path === workspaceFilePath;
+        });
+        if (currentDraft) {
+            return currentDraft.content;
+        }
+        for (let index = this.codeTaskCards.length - 1; index >= 0; index -= 1) {
+            const card = this.codeTaskCards[index];
+            if (card.kind !== "file_change" && card.kind !== "draft_ready") {
+                continue;
+            }
+            const matchingDraft = card.draftFiles.find((item) => item.filePath === workspaceFilePath);
+            if (matchingDraft) {
+                return matchingDraft.content;
+            }
+        }
+        return null;
     }
 
     private getCurrentLabel(): string | undefined {
@@ -2392,6 +2757,283 @@ function getDisclaimer(historySource: string | null | undefined): string | null 
     return null;
 }
 
+function buildConversationViewModel(options: {
+    taskCards: CodeTaskCardViewModel[];
+    status: CodeTaskStatus;
+    recentTasks: RecentTaskSummaryViewModel[];
+    composerHintTarget: string | null;
+    composerContextFiles: string[];
+}): CodeConversationViewModel {
+    const runs = new Map<string, CodeConversationRunViewModel>();
+    const runTimestamps = new Map<string, string>();
+    let latestRunId: string | null = null;
+
+    for (const card of options.taskCards) {
+        if (card.kind === "run_marker") {
+            runs.set(card.runId, {
+                runId: card.runId,
+                sourceTaskId: card.sourceTaskId,
+                targetFilePath: card.targetFilePath,
+                launchMode: card.launchMode,
+                status: "idle",
+                messages: [],
+            });
+            runTimestamps.set(card.runId, card.timestamp);
+            latestRunId = card.runId;
+            continue;
+        }
+
+        const run = runs.get(card.runId);
+        if (!run) {
+            continue;
+        }
+        latestRunId = card.runId;
+        const runTimestamp = runTimestamps.get(card.runId) ?? new Date().toISOString();
+
+        if (card.kind === "user_message") {
+            run.messages.push({
+                id: card.id,
+                runId: card.runId,
+                kind: "user_turn",
+                text: card.prompt,
+                timestamp: runTimestamp,
+            });
+            continue;
+        }
+
+        if (card.kind === "thinking") {
+            const workingMessage = ensureAssistantWorkingMessage(run, runTimestamp);
+            workingMessage.details = appendReasoningDetails(workingMessage.details, card.text);
+            continue;
+        }
+
+        if (card.kind === "tool_call" || card.kind === "file_change" || card.kind === "verify") {
+            const workingMessage = ensureAssistantWorkingMessage(run, runTimestamp);
+            workingMessage.details = appendToolTraceDetails(workingMessage.details, card);
+            continue;
+        }
+
+        if (card.kind === "draft_ready") {
+            const result = buildAssistantResultPayload(card);
+            run.result = result;
+            run.status = card.applied ? "applied" : "ready_to_apply";
+            run.messages.push({
+                id: card.id,
+                runId: card.runId,
+                kind: "assistant_result",
+                text: result.summary,
+                timestamp: runTimestamp,
+                details: {
+                    toolTrace: [],
+                    reasoningSummary: null,
+                    fileChanges: buildAssistantFileChanges(card.draftFiles, "Verified draft prepared."),
+                    verifySummary: [],
+                    rawTranscriptSnippet: null,
+                },
+                actions: buildAssistantResultActions(result),
+            });
+            continue;
+        }
+
+        if (card.kind === "error") {
+            run.result = {
+                summary: card.message,
+                fileCount: 0,
+                files: [],
+                readyToApply: false,
+                applied: false,
+                errorMessage: card.message,
+            };
+            run.status = "failed";
+            run.messages.push({
+                id: card.id,
+                runId: card.runId,
+                kind: "assistant_error",
+                text: card.message,
+                timestamp: runTimestamp,
+                details: cloneLatestWorkingDetails(run.messages),
+                actions: [],
+            });
+        }
+    }
+
+    const orderedRuns = [...runs.values()];
+    if (latestRunId) {
+        const latestRun = orderedRuns.find((item) => item.runId === latestRunId);
+        if (latestRun && latestRun.result === undefined) {
+            latestRun.status = options.status;
+        }
+    }
+
+    return {
+        runs: orderedRuns,
+        composerHintTarget: options.composerHintTarget,
+        composerContextFiles: [...options.composerContextFiles],
+        recentTasks: [...options.recentTasks],
+    };
+}
+
+function ensureAssistantWorkingMessage(
+    run: CodeConversationRunViewModel,
+    timestamp: string,
+): CodeConversationMessageViewModel {
+    const existing = run.messages.find((message) => message.kind === "assistant_working");
+    if (existing) {
+        return existing;
+    }
+    const message: CodeConversationMessageViewModel = {
+        id: `${run.runId}_assistant_working`,
+        runId: run.runId,
+        kind: "assistant_working",
+        text: "Working through the request.",
+        timestamp,
+        details: createEmptyAssistantTurnDetails(),
+        actions: [],
+    };
+    run.messages.push(message);
+    return message;
+}
+
+function createEmptyAssistantTurnDetails(): AssistantTurnDetails {
+    return {
+        toolTrace: [],
+        reasoningSummary: null,
+        fileChanges: [],
+        verifySummary: [],
+        rawTranscriptSnippet: null,
+    };
+}
+
+function appendReasoningDetails(
+    details: AssistantTurnDetails | null | undefined,
+    text: string,
+): AssistantTurnDetails {
+    const base = details ?? createEmptyAssistantTurnDetails();
+    const nextReasoning = `${base.reasoningSummary ?? ""}${text}`.trim();
+    const nextTranscript = `${base.rawTranscriptSnippet ?? ""}${text}`.trim();
+    return {
+        ...base,
+        reasoningSummary: nextReasoning.length > 0 ? nextReasoning : null,
+        rawTranscriptSnippet: nextTranscript.length > 0 ? nextTranscript : null,
+    };
+}
+
+function appendToolTraceDetails(
+    details: AssistantTurnDetails | null | undefined,
+    card:
+        | Extract<CodeTaskCardViewModel, { kind: "tool_call" }>
+        | Extract<CodeTaskCardViewModel, { kind: "file_change" }>
+        | Extract<CodeTaskCardViewModel, { kind: "verify" }>,
+): AssistantTurnDetails {
+    const base = details ?? createEmptyAssistantTurnDetails();
+    const toolTrace = [...base.toolTrace];
+    const traceItem = buildToolTraceItem(card);
+    const existingIndex = toolTrace.findIndex((item) => item.stepId === traceItem.stepId);
+    if (existingIndex >= 0) {
+        toolTrace[existingIndex] = traceItem;
+    } else {
+        toolTrace.push(traceItem);
+    }
+
+    let fileChanges = base.fileChanges;
+    if (card.kind === "file_change" && card.draftFiles.length > 0) {
+        fileChanges = buildAssistantFileChanges(card.draftFiles, card.summary);
+    }
+
+    return {
+        ...base,
+        toolTrace,
+        fileChanges,
+        verifySummary:
+            card.kind === "verify" ? [...base.verifySummary, card.summary] : base.verifySummary,
+    };
+}
+
+function buildToolTraceItem(
+    card:
+        | Extract<CodeTaskCardViewModel, { kind: "tool_call" }>
+        | Extract<CodeTaskCardViewModel, { kind: "file_change" }>
+        | Extract<CodeTaskCardViewModel, { kind: "verify" }>,
+): AssistantToolTraceItemViewModel {
+    return {
+        stepId: card.stepId,
+        stepKind:
+            card.kind === "tool_call"
+                ? "view"
+                : card.kind === "file_change"
+                    ? "edit"
+                    : "verify",
+        status: card.status,
+        filePath: card.filePath,
+        toolName: card.kind === "tool_call" ? card.toolName : null,
+        summary: card.summary,
+    };
+}
+
+function buildAssistantFileChanges(
+    draftFiles: CodeTaskCardDraftFileViewModel[],
+    summary: string,
+): AssistantFileChangeViewModel[] {
+    return draftFiles.map((item) => {
+        return {
+            ...item,
+            summary,
+            diffAvailable: item.baseSource === "workspace_live",
+        };
+    });
+}
+
+function buildAssistantResultPayload(
+    card: Extract<CodeTaskCardViewModel, { kind: "draft_ready" }>,
+): AssistantResultPayload {
+    const summary = card.applied
+        ? `Completed the task and applied ${card.fileCount} file change${card.fileCount === 1 ? "" : "s"}.`
+        : `Prepared a verified draft touching ${card.fileCount} file${card.fileCount === 1 ? "" : "s"}.`;
+    return {
+        summary,
+        fileCount: card.fileCount,
+        files: [...card.files],
+        readyToApply: !card.applied,
+        applied: card.applied,
+    };
+}
+
+function buildAssistantResultActions(result: AssistantResultPayload): MessageActionViewModel[] {
+    const actions: MessageActionViewModel[] = [];
+    if (result.files.length === 1) {
+        actions.push({
+            type: "open_diff",
+            label: "Open diff",
+            path: result.files[0].filePath,
+            enabled: result.files[0].diffAvailable,
+        });
+    }
+    if (result.readyToApply) {
+        actions.push({ type: "apply", label: "Apply", enabled: true });
+        actions.push({ type: "dismiss_result", label: "Dismiss", enabled: true });
+    }
+    return actions;
+}
+
+function cloneLatestWorkingDetails(
+    messages: CodeConversationMessageViewModel[],
+): AssistantTurnDetails | null {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+        const message = messages[index];
+        if (message.kind !== "assistant_working" || !message.details) {
+            continue;
+        }
+        return {
+            toolTrace: [...message.details.toolTrace],
+            reasoningSummary: message.details.reasoningSummary,
+            fileChanges: [...message.details.fileChanges],
+            verifySummary: [...message.details.verifySummary],
+            rawTranscriptSnippet: message.details.rawTranscriptSnippet,
+        };
+    }
+    return null;
+}
+
 function mergeHistoryItems(
     existing: CodingTaskHistoryItemViewModel[],
     incoming: Array<{
@@ -2422,6 +3064,30 @@ function mergeHistoryItems(
 
     return [...merged.values()].sort((left, right) => {
         return Date.parse(right.updatedAt) - Date.parse(left.updatedAt);
+    });
+}
+
+function buildRecentTaskSummaries(
+    result: ApiResult<BackendCodingTaskHistoryItem[] | {
+        items: BackendCodingTaskHistoryItem[];
+        total: number;
+        limit: number;
+        offset: number;
+        has_more: boolean;
+    }>,
+): RecentTaskSummaryViewModel[] {
+    if (!result.ok) {
+        return [];
+    }
+    const items = Array.isArray(result.data) ? result.data : result.data.items;
+    return items.slice(0, 5).map((item) => {
+        return {
+            taskId: item.task_id,
+            targetFilePath: item.target_file_path,
+            userPrompt: item.user_prompt,
+            status: item.status,
+            updatedAt: item.updated_at,
+        };
     });
 }
 

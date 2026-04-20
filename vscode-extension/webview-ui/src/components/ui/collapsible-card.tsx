@@ -2,7 +2,6 @@ import * as Collapsible from "@radix-ui/react-collapsible";
 import type { ReactNode } from "react";
 
 import { cn } from "../../lib/cn";
-import { Badge } from "./badge";
 import { Button } from "./button";
 import { Card } from "./card";
 
@@ -30,8 +29,13 @@ export function CollapsibleCard(props: {
                         <div className="flex items-center gap-2">
                             {props.action}
                             <Collapsible.Trigger asChild>
-                                <Button variant="ghost" size="sm">
-                                    <Badge variant="subtle">{props.open ? "open" : "closed"}</Badge>
+                                <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    aria-expanded={props.open}
+                                    aria-label={props.open ? `Collapse ${props.title}` : `Expand ${props.title}`}
+                                >
+                                    {props.open ? "Collapse" : "Expand"}
                                 </Button>
                             </Collapsible.Trigger>
                         </div>

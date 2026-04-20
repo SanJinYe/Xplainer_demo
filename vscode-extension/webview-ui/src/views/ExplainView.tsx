@@ -9,7 +9,7 @@ export function ExplainView() {
 
     if (explainState.type === "state:empty") {
         return (
-            <div className="flex h-full items-center justify-center p-6">
+            <div className="flex min-h-full items-center justify-center p-6">
                 <div className="max-w-md space-y-4 text-center">
                     <p className="text-lg font-semibold">Explain</p>
                     <p className="text-sm text-[var(--te-muted)]">{explainState.message}</p>
@@ -23,7 +23,7 @@ export function ExplainView() {
 
     if (explainState.type === "state:loading") {
         return (
-            <div className="flex h-full items-center justify-center p-6">
+            <div className="flex min-h-full items-center justify-center p-6">
                 <div className="space-y-2 text-center">
                     <p className="text-lg font-semibold">Loading explanation</p>
                     <p className="text-sm text-[var(--te-muted)]">
@@ -36,7 +36,7 @@ export function ExplainView() {
 
     if (explainState.type === "state:error") {
         return (
-            <div className="flex h-full items-center justify-center p-6">
+            <div className="flex min-h-full items-center justify-center p-6">
                 <div className="max-w-md space-y-4 text-center">
                     <p className="text-lg font-semibold">Explain failed</p>
                     <p className="text-sm text-[var(--te-muted)]">
@@ -52,12 +52,12 @@ export function ExplainView() {
 
     const data = explainState.data;
     return (
-        <div className="flex h-full flex-col gap-4 overflow-y-auto p-4">
-            <section className="rounded-[18px] border border-[var(--te-border)] bg-[var(--te-bg)] px-4 py-4">
+        <div className="flex min-h-full flex-col gap-3 px-3 py-3">
+            <section className="rounded-[16px] border border-[var(--te-border)] bg-[var(--te-bg)] px-3 py-3">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="space-y-2">
                         <div className="flex flex-wrap items-center gap-2">
-                            <h2 className="text-xl font-semibold">{data.entityName}</h2>
+                            <h2 className="text-lg font-semibold">{data.entityName}</h2>
                             <Badge>{data.entityType}</Badge>
                             {data.profile ? <Badge variant="accent">{data.profile.label}</Badge> : null}
                         </div>
@@ -67,7 +67,7 @@ export function ExplainView() {
                                 : data.filePath}
                         </p>
                         {data.signature ? (
-                            <pre className="whitespace-pre-wrap rounded-2xl border border-[var(--te-border)] bg-[var(--te-surface)] px-3 py-2 text-xs">
+                            <pre className="whitespace-pre-wrap rounded-[16px] border border-[var(--te-border)] bg-[var(--te-surface)] px-3 py-2 text-xs">
                                 {data.signature}
                             </pre>
                         ) : null}
@@ -95,7 +95,7 @@ export function ExplainView() {
                 id="explain.summary"
                 title="Summary"
                 description="Structured explanation with profile-aware evidence."
-                open={!state.ui.collapsedPanels["explain.summary"]}
+                open={!state.persisted.collapsedPanels["explain.summary"]}
                 onOpenChange={(open) => actions.setPanelCollapsed("explain.summary", !open)}
             >
                 <div className="space-y-4">
@@ -119,10 +119,10 @@ export function ExplainView() {
                 id="explain.relations"
                 title="Relation Context"
                 description="Callers, callees, related entities, and global impact."
-                open={!state.ui.collapsedPanels["explain.relations"]}
+                open={!state.persisted.collapsedPanels["explain.relations"]}
                 onOpenChange={(open) => actions.setPanelCollapsed("explain.relations", !open)}
             >
-                <div className="grid gap-4 xl:grid-cols-2">
+                <div className="grid gap-3 xl:grid-cols-2">
                     <RelationList
                         title="Callers"
                         items={data.callers}
@@ -138,7 +138,7 @@ export function ExplainView() {
                         items={data.relatedEntities}
                         onOpenEntity={(entityId) => actions.send({ type: "openRelatedEntity", entityId })}
                     />
-                    <div className="space-y-3 rounded-[18px] border border-[var(--te-border)] bg-[var(--te-bg)] p-4">
+                    <div className="space-y-3 rounded-[16px] border border-[var(--te-border)] bg-[var(--te-bg)] p-3">
                         <div className="flex items-center justify-between gap-2">
                             <h3 className="text-sm font-semibold">Global Impact</h3>
                             {data.globalImpactSummary ? <Badge variant="accent">summary</Badge> : null}
@@ -155,7 +155,7 @@ export function ExplainView() {
                                         <button
                                             key={`${item.direction}-${item.terminalEntityId}`}
                                             type="button"
-                                            className="w-full rounded-[16px] border border-[var(--te-border)] bg-[var(--te-surface)] px-3 py-3 text-left"
+                                            className="w-full rounded-[14px] border border-[var(--te-border)] bg-[var(--te-surface)] px-3 py-3 text-left"
                                             onClick={() => actions.send({
                                                 type: "openRelatedEntity",
                                                 entityId: item.terminalEntityId,
@@ -180,11 +180,11 @@ export function ExplainView() {
                 id="explain.docs"
                 title="Docs And Timeline"
                 description="External docs and event timeline stay first-class in TailEvents."
-                open={!state.ui.collapsedPanels["explain.docs"]}
+                open={!state.persisted.collapsedPanels["explain.docs"]}
                 onOpenChange={(open) => actions.setPanelCollapsed("explain.docs", !open)}
             >
-                <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
-                    <div className="space-y-3 rounded-[18px] border border-[var(--te-border)] bg-[var(--te-bg)] p-4">
+                <div className="grid gap-3 xl:grid-cols-[1.1fr_0.9fr]">
+                    <div className="space-y-3 rounded-[16px] border border-[var(--te-border)] bg-[var(--te-bg)] p-3">
                         <h3 className="text-sm font-semibold">External Docs</h3>
                         {data.externalDocs.length === 0 ? (
                             <p className="text-sm text-[var(--te-muted)]">{data.externalDocsPlaceholder}</p>
@@ -193,7 +193,7 @@ export function ExplainView() {
                                 return (
                                     <div
                                         key={`${item.title}-${index}`}
-                                        className="rounded-[16px] border border-[var(--te-border)] bg-[var(--te-surface)] px-3 py-3"
+                                        className="rounded-[14px] border border-[var(--te-border)] bg-[var(--te-surface)] px-3 py-3"
                                     >
                                         <p className="text-sm font-medium">{item.title}</p>
                                         <p className="mt-1 text-xs text-[var(--te-muted)]">{item.sourceLabel}</p>
@@ -203,7 +203,7 @@ export function ExplainView() {
                             })
                         )}
                     </div>
-                    <div className="space-y-3 rounded-[18px] border border-[var(--te-border)] bg-[var(--te-bg)] p-4">
+                    <div className="space-y-3 rounded-[16px] border border-[var(--te-border)] bg-[var(--te-bg)] p-3">
                         <h3 className="text-sm font-semibold">Timeline</h3>
                         {data.historyLoading ? (
                             <p className="text-sm text-[var(--te-muted)]">Loading history...</p>
@@ -214,7 +214,7 @@ export function ExplainView() {
                                 return (
                                     <div
                                         key={item.eventId}
-                                        className="rounded-[16px] border border-[var(--te-border)] bg-[var(--te-surface)] px-3 py-3"
+                                        className="rounded-[14px] border border-[var(--te-border)] bg-[var(--te-surface)] px-3 py-3"
                                     >
                                         <div className="flex items-center gap-2">
                                             <Badge>{item.actionType}</Badge>
@@ -244,7 +244,7 @@ function RelationList(props: {
     onOpenEntity: (entityId: string) => void;
 }) {
     return (
-        <div className="space-y-3 rounded-[18px] border border-[var(--te-border)] bg-[var(--te-bg)] p-4">
+        <div className="space-y-3 rounded-[16px] border border-[var(--te-border)] bg-[var(--te-bg)] p-3">
             <h3 className="text-sm font-semibold">{props.title}</h3>
             {props.items.length === 0 ? (
                 <p className="text-sm text-[var(--te-muted)]">No related entities.</p>
@@ -254,7 +254,7 @@ function RelationList(props: {
                         <button
                             key={item.entityId}
                             type="button"
-                            className="w-full rounded-[16px] border border-[var(--te-border)] bg-[var(--te-surface)] px-3 py-3 text-left"
+                            className="w-full rounded-[14px] border border-[var(--te-border)] bg-[var(--te-surface)] px-3 py-3 text-left"
                             onClick={() => props.onOpenEntity(item.entityId)}
                         >
                             <p className="text-sm font-medium">{item.label}</p>

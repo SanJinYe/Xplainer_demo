@@ -22,6 +22,9 @@ interface WebviewActions {
     setActiveView: (activeView: ActiveView) => void;
     setPromptDraft: (promptDraft: string) => void;
     setPanelCollapsed: (panelId: string, collapsed: boolean) => void;
+    setProfileOpen: (open: boolean) => void;
+    dismissDraftReady: () => void;
+    showDraftReady: () => void;
     send: (message: SidebarMessageFromWebview) => void;
 }
 
@@ -58,14 +61,14 @@ export function WebviewStateProvider(props: { children: ReactNode }) {
     }, [bridge, state]);
 
     useEffect(() => {
-        const desiredMode = state.ui.activeView === "explain" ? "explain" : "code";
+        const desiredMode = state.persisted.activeView === "explain" ? "explain" : "code";
         if (state.hostMode !== desiredMode) {
             bridge.postMessage({
                 type: "setMode",
                 mode: desiredMode,
             });
         }
-    }, [bridge, state.hostMode, state.ui.activeView]);
+    }, [bridge, state.hostMode, state.persisted.activeView]);
 
     const actions = useMemo<WebviewActions>(() => {
         return {
@@ -77,6 +80,15 @@ export function WebviewStateProvider(props: { children: ReactNode }) {
             },
             setPanelCollapsed(panelId, collapsed) {
                 reducerActions.setPanelCollapsed(panelId, collapsed);
+            },
+            setProfileOpen(open) {
+                reducerActions.setProfileOpen(open);
+            },
+            dismissDraftReady() {
+                reducerActions.dismissDraftReady();
+            },
+            showDraftReady() {
+                reducerActions.showDraftReady();
             },
             send(message) {
                 bridge.postMessage(message);

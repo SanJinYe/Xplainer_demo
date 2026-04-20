@@ -23,6 +23,11 @@ html,
 body,
 #root {
     height: 100%;
+    overflow: hidden;
+}
+
+#root {
+    display: flex;
 }
 
 body {
@@ -31,6 +36,7 @@ body {
     color: var(--te-foreground);
     font-family: var(--te-font);
     font-size: var(--te-font-size);
+    overscroll-behavior: none;
 }
 
 * {

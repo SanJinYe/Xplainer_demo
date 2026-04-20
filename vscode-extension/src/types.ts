@@ -585,6 +585,178 @@ export interface DraftFileViewModel {
     originalDocumentVersion: number | null;
 }
 
+export interface RecentTaskSummaryViewModel {
+    taskId: string;
+    targetFilePath: string;
+    userPrompt: string;
+    status: BackendCodingTaskStatus;
+    updatedAt: string;
+}
+
+export interface CodeTaskCardDraftFileViewModel {
+    filePath: string;
+    content: string;
+    baseContent: string | null;
+    baseSource: DraftFileBaseSource;
+}
+
+export interface CodeTaskCardBase {
+    id: string;
+    runId: string;
+    kind:
+        | "run_marker"
+        | "user_message"
+        | "thinking"
+        | "tool_call"
+        | "file_change"
+        | "verify"
+        | "draft_ready"
+        | "error";
+}
+
+export interface CodeTaskRunMarkerCardViewModel extends CodeTaskCardBase {
+    kind: "run_marker";
+    targetFilePath: string | null;
+    timestamp: string;
+    launchMode: CodingTaskLaunchMode;
+    sourceTaskId: string | null;
+}
+
+export interface CodeTaskUserMessageCardViewModel extends CodeTaskCardBase {
+    kind: "user_message";
+    prompt: string;
+    targetFilePath: string | null;
+    contextFiles: string[];
+    editableFiles: string[];
+}
+
+export interface CodeTaskThinkingCardViewModel extends CodeTaskCardBase {
+    kind: "thinking";
+    text: string;
+    streaming: boolean;
+}
+
+export interface CodeTaskToolCallCardViewModel extends CodeTaskCardBase {
+    kind: "tool_call";
+    stepId: string;
+    toolName: string | null;
+    filePath: string;
+    status: BackendTaskStepEvent["status"];
+    summary: string;
+}
+
+export interface CodeTaskFileChangeCardViewModel extends CodeTaskCardBase {
+    kind: "file_change";
+    stepId: string;
+    filePath: string;
+    status: BackendTaskStepEvent["status"];
+    summary: string;
+    draftFiles: CodeTaskCardDraftFileViewModel[];
+    diffAvailable: boolean;
+}
+
+export interface CodeTaskVerifyCardViewModel extends CodeTaskCardBase {
+    kind: "verify";
+    stepId: string;
+    filePath: string;
+    status: BackendTaskStepEvent["status"];
+    summary: string;
+}
+
+export interface AssistantResultFileViewModel {
+    filePath: string;
+    diffAvailable: boolean;
+}
+
+export interface AssistantToolTraceItemViewModel {
+    stepId: string;
+    stepKind: BackendTaskStepEvent["step_kind"];
+    status: BackendTaskStepEvent["status"];
+    filePath: string;
+    toolName: string | null;
+    summary: string;
+}
+
+export interface AssistantFileChangeViewModel extends CodeTaskCardDraftFileViewModel {
+    summary: string;
+    diffAvailable: boolean;
+}
+
+export interface AssistantTurnDetails {
+    toolTrace: AssistantToolTraceItemViewModel[];
+    reasoningSummary: string | null;
+    fileChanges: AssistantFileChangeViewModel[];
+    verifySummary: string[];
+    rawTranscriptSnippet: string | null;
+}
+
+export interface MessageActionViewModel {
+    type: "open_file" | "open_diff" | "apply" | "dismiss_result";
+    label: string;
+    path?: string;
+    enabled?: boolean;
+}
+
+export interface AssistantResultPayload {
+    summary: string;
+    fileCount: number;
+    files: AssistantResultFileViewModel[];
+    readyToApply: boolean;
+    applied: boolean;
+    errorMessage?: string | null;
+}
+
+export interface CodeConversationMessageViewModel {
+    id: string;
+    runId: string;
+    kind: "user_turn" | "assistant_working" | "assistant_result" | "assistant_error";
+    text: string;
+    timestamp: string;
+    details?: AssistantTurnDetails | null;
+    actions?: MessageActionViewModel[];
+}
+
+export interface CodeConversationRunViewModel {
+    runId: string;
+    sourceTaskId?: string | null;
+    targetFilePath: string | null;
+    launchMode: CodingTaskLaunchMode;
+    status: CodeTaskStatus | "failed" | "cancelled";
+    messages: CodeConversationMessageViewModel[];
+    result?: AssistantResultPayload;
+}
+
+export interface CodeConversationViewModel {
+    runs: CodeConversationRunViewModel[];
+    composerHintTarget?: string | null;
+    composerContextFiles: string[];
+    recentTasks: RecentTaskSummaryViewModel[];
+}
+
+export interface CodeTaskDraftReadyCardViewModel extends CodeTaskCardBase {
+    kind: "draft_ready";
+    taskId: string;
+    fileCount: number;
+    files: AssistantResultFileViewModel[];
+    draftFiles: CodeTaskCardDraftFileViewModel[];
+    applied: boolean;
+}
+
+export interface CodeTaskErrorCardViewModel extends CodeTaskCardBase {
+    kind: "error";
+    message: string;
+}
+
+export type CodeTaskCardViewModel =
+    | CodeTaskRunMarkerCardViewModel
+    | CodeTaskUserMessageCardViewModel
+    | CodeTaskThinkingCardViewModel
+    | CodeTaskToolCallCardViewModel
+    | CodeTaskFileChangeCardViewModel
+    | CodeTaskVerifyCardViewModel
+    | CodeTaskDraftReadyCardViewModel
+    | CodeTaskErrorCardViewModel;
+
 export interface HistoryDetailStepViewModel {
     stepId: string;
     stepKind: BackendTaskStepEvent["step_kind"];
@@ -695,6 +867,7 @@ export interface CodeViewModel {
     modelOutputText: string;
     draftText: string;
     draftFiles: DraftFileViewModel[];
+    conversation: CodeConversationViewModel;
     message: string | null;
     canRun: boolean;
     canCancel: boolean;
@@ -862,9 +1035,22 @@ export interface SidebarSelectExplainProfileMessage {
     type: "selectExplainProfile";
 }
 
+export interface SidebarOnboardRepositoryMessage {
+    type: "onboardRepository";
+}
+
 export interface SidebarOpenWorkspaceFileMessage {
     type: "openWorkspaceFile";
     path: string;
+}
+
+export interface SidebarOpenDiffViewMessage {
+    type: "openDiffView";
+    path: string;
+}
+
+export interface SidebarClearCodeConversationMessage {
+    type: "clearCodeConversation";
 }
 
 export interface SidebarSetHistoryStatusFilterMessage {
@@ -909,7 +1095,10 @@ export type SidebarMessageFromWebview =
     | SidebarReplayHistoryTaskMessage
     | SidebarSelectCodeProfileMessage
     | SidebarSelectExplainProfileMessage
+    | SidebarOnboardRepositoryMessage
     | SidebarOpenWorkspaceFileMessage
+    | SidebarOpenDiffViewMessage
+    | SidebarClearCodeConversationMessage
     | SidebarSetHistoryStatusFilterMessage
     | SidebarSetHistoryTargetQueryMessage
     | SidebarSetHistoryTargetSelectionMessage
