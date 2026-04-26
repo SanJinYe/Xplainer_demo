@@ -12,12 +12,14 @@ It records structured change events, maps them to code entities with AST indexin
 - persistent coding-task history, replay preparation, verified drafts, and apply confirmation
 - separate effective `Code` and `Explain` profile selection, with `Explain` following `Code` by default
 - a React-based VS Code webview with dedicated `Explain`, `Code`, and `History` views plus a secondary `ProfilePanel`
+- a Cline-first host adapter path for ingesting mature coding-agent task traces into TailEvents
 
 The repository keeps the shipped product surface only. Local plans, tests, progress logs, and private notes stay out of version control.
 
 ## What It Does
 
 - Ingests append-only coding events into SQLite
+- Ingests Cline-native task messages through a host adapter and normalizes file-change tool messages into TailEvents events
 - Builds and updates entity and relation indexes from Python code
 - Resolves symbols and cursor locations to entities
 - Returns deterministic low-latency summaries for hover
@@ -110,6 +112,7 @@ Coding Agent / Baseline Onboarding
 
 - `POST /api/v1/events`
 - `POST /api/v1/events/batch`
+- `POST /api/v1/host/cline/events`
 - `GET /api/v1/entities/by-location`
 - `POST /api/v1/explain`
 - `GET /api/v1/explain/{entity_id}`

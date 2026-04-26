@@ -19,6 +19,8 @@ CURRENT_PROGRESS.md
 tests/
 !tests/
 tests/*
+!tests/test_cline_host_adapter.py
+!tests/test_cline_trace_spike.py
 !tests/test_coding_runtime.py
 regression_report.txt
 explanation_prompt_audit.md
