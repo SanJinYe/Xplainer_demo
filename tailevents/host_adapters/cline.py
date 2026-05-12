@@ -6,17 +6,22 @@ import json
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from tailevents.host_adapters.normalized import (
+    NormalizedHostEvent,
+    host_events_to_raw_events,
+)
+from tailevents.models.enums import ActionType
 from tailevents.models.event import RawEvent
 
 
 FILE_CHANGE_ACTIONS = {
-    "editedExistingFile": "modify",
-    "newFileCreated": "create",
-    "fileDeleted": "delete",
+    "editedExistingFile": ActionType.MODIFY,
+    "newFileCreated": ActionType.CREATE,
+    "fileDeleted": ActionType.DELETE,
 }
 READ_ONLY_TOOLS = {"readFile"}
 
@@ -84,6 +89,7 @@ class ClineConversionResult:
     summary: ClineConversionSummary
     raw_events: list[RawEvent]
     observations: list[dict[str, Any]]
+    normalized_events: list[NormalizedHostEvent] = field(default_factory=list)
 
 
 def convert_cline_messages(
@@ -93,9 +99,26 @@ def convert_cline_messages(
 ) -> ClineConversionResult:
     """Convert Cline UI messages into TailEvents RawEvents."""
 
+    result = normalize_cline_messages(task_id, workspace_root, messages)
+    return ClineConversionResult(
+        summary=result.summary,
+        raw_events=host_events_to_raw_events(result.normalized_events),
+        observations=result.observations,
+        normalized_events=result.normalized_events,
+    )
+
+
+def normalize_cline_messages(
+    task_id: str,
+    workspace_root: Path,
+    messages: list[dict[str, Any]],
+) -> ClineConversionResult:
+    """Convert Cline UI messages into host-agnostic normalized events."""
+
     summary = ClineConversionSummary(task_id=task_id, message_count=len(messages))
-    raw_events: list[RawEvent] = []
+    normalized_events: list[NormalizedHostEvent] = []
     observations: list[dict[str, Any]] = []
+    session_id = _session_id(task_id)
 
     for message in messages:
         if message.get("partial") is True:
@@ -105,9 +128,29 @@ def convert_cline_messages(
         kind = message.get("ask") or message.get("say")
         if kind == "completion_result":
             summary.completion_count += 1
+            normalized_events.append(
+                NormalizedHostEvent(
+                    host="cline",
+                    task_id=task_id,
+                    session_id=session_id,
+                    agent_step_id=step_id(task_id, message),
+                    kind="completion",
+                    metadata={"message_kind": kind},
+                )
+            )
             continue
         if kind == "error":
             summary.error_count += 1
+            normalized_events.append(
+                NormalizedHostEvent(
+                    host="cline",
+                    task_id=task_id,
+                    session_id=session_id,
+                    agent_step_id=step_id(task_id, message),
+                    kind="error",
+                    metadata={"message_kind": kind},
+                )
+            )
             continue
         if kind != "tool":
             continue
@@ -121,10 +164,20 @@ def convert_cline_messages(
         tool_name = str(payload.get("tool") or "")
         if tool_name in READ_ONLY_TOOLS:
             summary.read_observation_count += 1
+            observation = NormalizedHostEvent(
+                host="cline",
+                task_id=task_id,
+                session_id=session_id,
+                agent_step_id=step_id(task_id, message),
+                kind="read_observation",
+                tool_name=tool_name,
+                file_path=_path_text(payload.get("path")),
+            )
+            normalized_events.append(observation)
             observations.append(
                 {
-                    "session_id": _session_id(task_id),
-                    "agent_step_id": step_id(task_id, message),
+                    "session_id": observation.session_id,
+                    "agent_step_id": observation.agent_step_id,
                     "tool": tool_name,
                     "path": payload.get("path"),
                 }
@@ -137,23 +190,26 @@ def convert_cline_messages(
             continue
 
         summary.file_change_count += 1
-        raw_event, skip_reason = to_raw_event(
+        normalized_event, skip_reason = to_normalized_event(
             task_id=task_id,
             message=message,
             payload=payload,
             action_type=action_type,
             workspace_root=workspace_root,
         )
-        if raw_event is None:
+        if normalized_event is None:
             summary.skipped[skip_reason or "invalid_event"] += 1
             continue
-        raw_events.append(raw_event)
+        normalized_events.append(normalized_event)
 
-    summary.raw_event_count = len(raw_events)
+    summary.raw_event_count = len(
+        [event for event in normalized_events if event.kind == "file_change"]
+    )
     return ClineConversionResult(
         summary=summary,
-        raw_events=raw_events,
+        raw_events=host_events_to_raw_events(normalized_events),
         observations=observations,
+        normalized_events=normalized_events,
     )
 
 
@@ -172,9 +228,29 @@ def to_raw_event(
     task_id: str,
     message: dict[str, Any],
     payload: dict[str, Any],
-    action_type: str,
+    action_type: Union[ActionType, str],
     workspace_root: Path,
 ) -> tuple[Optional[RawEvent], Optional[str]]:
+    normalized_event, skip_reason = to_normalized_event(
+        task_id=task_id,
+        message=message,
+        payload=payload,
+        action_type=action_type,
+        workspace_root=workspace_root,
+    )
+    if normalized_event is None:
+        return None, skip_reason
+    return normalized_event.to_raw_event(), None
+
+
+def to_normalized_event(
+    task_id: str,
+    message: dict[str, Any],
+    payload: dict[str, Any],
+    action_type: Union[ActionType, str],
+    workspace_root: Path,
+) -> tuple[Optional[NormalizedHostEvent], Optional[str]]:
+    normalized_action_type = _coerce_action_type(action_type)
     raw_path = payload.get("path")
     if not isinstance(raw_path, str) or not raw_path.strip():
         return None, "missing_path"
@@ -185,17 +261,23 @@ def to_raw_event(
         return None, "missing_snapshot"
 
     file_path = _display_file_path(absolute_path, workspace_root, raw_path)
-    event_payload = {
-        "action_type": action_type,
-        "file_path": file_path,
-        "code_snapshot": snapshot,
-        "intent": _intent_for(action_type, file_path),
-        "reasoning": _reasoning_for(message, payload),
-        "agent_step_id": step_id(task_id, message),
-        "session_id": _session_id(task_id),
-        "line_range": _line_range_for(payload, snapshot),
-    }
-    return RawEvent.model_validate(event_payload), None
+    return (
+        NormalizedHostEvent(
+            host="cline",
+            task_id=task_id,
+            session_id=_session_id(task_id),
+            agent_step_id=step_id(task_id, message),
+            kind="file_change",
+            tool_name=str(payload.get("tool") or ""),
+            action_type=normalized_action_type,
+            file_path=file_path,
+            code_snapshot=snapshot,
+            intent=_intent_for(normalized_action_type, file_path),
+            reasoning=_reasoning_for(message, payload),
+            line_range=_line_range_for(payload, snapshot),
+        ),
+        None,
+    )
 
 
 def step_id(task_id: str, message: dict[str, Any]) -> str:
@@ -238,9 +320,20 @@ def _read_snapshot(path: Path, payload: dict[str, Any]) -> str:
     return ""
 
 
-def _intent_for(action_type: str, file_path: str) -> str:
+def _path_text(value: Any) -> Optional[str]:
+    return value if isinstance(value, str) else None
+
+
+def _coerce_action_type(action_type: Union[ActionType, str]) -> ActionType:
+    if isinstance(action_type, ActionType):
+        return action_type
+    return ActionType(action_type)
+
+
+def _intent_for(action_type: ActionType, file_path: str) -> str:
     verbs = {"create": "create", "modify": "modify", "delete": "delete"}
-    return f"Cline {verbs.get(action_type, action_type)} {file_path}"
+    action_value = action_type.value
+    return f"Cline {verbs.get(action_value, action_value)} {file_path}"
 
 
 def _reasoning_for(message: dict[str, Any], payload: dict[str, Any]) -> str:
@@ -275,7 +368,9 @@ __all__ = [
     "ClineTraceBatchRequest",
     "ClineTraceIngestResponse",
     "convert_cline_messages",
+    "normalize_cline_messages",
     "parse_message_payload",
     "step_id",
+    "to_normalized_event",
     "to_raw_event",
 ]
