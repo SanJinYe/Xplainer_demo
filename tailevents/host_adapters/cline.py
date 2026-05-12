@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,6 +20,12 @@ FILE_CHANGE_ACTIONS = {
     "fileDeleted": "delete",
 }
 READ_ONLY_TOOLS = {"readFile"}
+FINAL_FILE_RESULT_RE = re.compile(
+    r"\[(?P<tool>apply_patch|replace_in_file|write_to_file) for ['\"](?P<path>[^'\"]+)['\"]\] Result:"
+    r"[\s\S]*?<final_file_content path=\"(?P<content_path>[^\"]+)\">\n?"
+    r"(?P<content>[\s\S]*?)</final_file_content>",
+    re.MULTILINE,
+)
 
 
 class ClineTraceBatchRequest(BaseModel):
@@ -37,10 +44,12 @@ class ClineTraceIngestResponse(BaseModel):
 
     task_id: str
     session_id: str
+    coding_task_id: str
     message_count: int
     tool_count: int
     file_change_count: int
     raw_event_count: int
+    task_prompt: Optional[str] = None
     read_observation_count: int
     completion_count: int
     error_count: int
@@ -54,6 +63,7 @@ class ClineConversionSummary:
     """Counters for a Cline trace conversion pass."""
 
     task_id: str
+    task_prompt: Optional[str] = None
     message_count: int = 0
     tool_count: int = 0
     file_change_count: int = 0
@@ -66,6 +76,7 @@ class ClineConversionSummary:
     def to_dict(self) -> dict[str, Any]:
         return {
             "task_id": self.task_id,
+            "task_prompt": self.task_prompt,
             "message_count": self.message_count,
             "tool_count": self.tool_count,
             "file_change_count": self.file_change_count,
@@ -103,20 +114,29 @@ def convert_cline_messages(
             continue
 
         kind = message.get("ask") or message.get("say")
+        if kind == "task" and summary.task_prompt is None:
+            task_prompt = message.get("text")
+            if isinstance(task_prompt, str) and task_prompt.strip():
+                summary.task_prompt = task_prompt.strip()
+            continue
         if kind == "completion_result":
             summary.completion_count += 1
             continue
         if kind == "error":
             summary.error_count += 1
             continue
-        if kind != "tool":
-            continue
 
-        summary.tool_count += 1
         payload = parse_message_payload(message)
+        if kind != "tool":
+            payload = _normalize_tracebridge_payload(payload)
+            if payload is None:
+                continue
+
         if payload is None:
             summary.skipped["tool_payload_not_json"] += 1
             continue
+
+        summary.tool_count += 1
 
         tool_name = str(payload.get("tool") or "")
         if tool_name in READ_ONLY_TOOLS:
@@ -168,6 +188,28 @@ def parse_message_payload(message: dict[str, Any]) -> Optional[dict[str, Any]]:
     return payload if isinstance(payload, dict) else None
 
 
+def _normalize_tracebridge_payload(payload: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    if payload is None:
+        return None
+
+    request = payload.get("request")
+    if not isinstance(request, str):
+        return None
+
+    match = FINAL_FILE_RESULT_RE.search(request)
+    if match is None:
+        return None
+
+    cline_tool = match.group("tool")
+    tool_name = "newFileCreated" if cline_tool == "write_to_file" else "editedExistingFile"
+    return {
+        "tool": tool_name,
+        "path": match.group("content_path") or match.group("path"),
+        "content": match.group("content"),
+        "result": request,
+    }
+
+
 def to_raw_event(
     task_id: str,
     message: dict[str, Any],
@@ -204,6 +246,12 @@ def step_id(task_id: str, message: dict[str, Any]) -> str:
 
 def _session_id(task_id: str) -> str:
     return f"cline:{task_id}"
+
+
+def cline_session_id(task_id: str) -> str:
+    """Return the TailEvents session id used for a Cline task."""
+
+    return _session_id(task_id)
 
 
 def _resolve_file_path(raw_path: str, workspace_root: Path) -> Path:
@@ -274,6 +322,7 @@ __all__ = [
     "ClineConversionSummary",
     "ClineTraceBatchRequest",
     "ClineTraceIngestResponse",
+    "cline_session_id",
     "convert_cline_messages",
     "parse_message_payload",
     "step_id",

@@ -39,6 +39,15 @@ def _tool_message(ts: int, payload: dict, partial: bool = False) -> dict:
     }
 
 
+def _api_result_message(ts: int, request: str) -> dict:
+    return {
+        "ts": ts,
+        "type": "say",
+        "say": "api_req_started",
+        "text": json.dumps({"request": request}),
+    }
+
+
 def test_cline_adapter_converts_tools_and_tracks_skips(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
@@ -73,6 +82,38 @@ def test_cline_adapter_converts_tools_and_tracks_skips(tmp_path: Path) -> None:
     ]
 
 
+def test_cline_adapter_converts_tracebridge_final_file_result(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+
+    result = convert_cline_messages(
+        task_id="task-bridge",
+        workspace_root=workspace_root,
+        messages=[
+            {"ts": 1, "type": "say", "say": "task", "text": "Update target"},
+            _api_result_message(
+                2,
+                "[replace_in_file for 'target.py'] Result:\n"
+                "The content was successfully saved.\n\n"
+                "<final_file_content path=\"target.py\">\n"
+                "def target():\n"
+                "    return 2\n"
+                "</final_file_content>",
+            ),
+        ],
+    )
+
+    assert result.summary.task_prompt == "Update target"
+    assert result.summary.tool_count == 1
+    assert result.summary.file_change_count == 1
+    assert result.summary.raw_event_count == 1
+    assert result.raw_events[0].action_type.value == "modify"
+    assert result.raw_events[0].file_path == "target.py"
+    assert result.raw_events[0].code_snapshot == "def target():\n    return 2\n"
+    assert result.raw_events[0].session_id == "cline:task-bridge"
+    assert result.raw_events[0].agent_step_id == "cline:task-bridge:2"
+
+
 def test_cline_host_route_ingests_and_lists_session_events() -> None:
     with TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
@@ -101,6 +142,7 @@ def test_cline_host_route_ingests_and_lists_session_events() -> None:
             assert response.status_code == 201
             body = response.json()
             assert body["ingested_count"] == 1
+            assert body["coding_task_id"] == "cline:task-route"
             assert body["read_observation_count"] == 1
             assert body["event_ids"]
 
@@ -110,3 +152,25 @@ def test_cline_host_route_ingests_and_lists_session_events() -> None:
             assert len(events) == 1
             assert events[0]["agent_step_id"] == "cline:task-route:11"
             assert events[0]["file_path"] == "target.py"
+
+            history_response = client.get("/api/v1/coding/tasks/cline:task-route")
+            assert history_response.status_code == 200
+            history = history_response.json()
+            assert history["task_id"] == "cline:task-route"
+            assert history["status"] == "applied"
+            assert history["resolved_target_files"] == ["target.py"]
+            assert [step["step_kind"] for step in history["steps"]] == ["view", "edit"]
+            assert history["applied_events"][0]["event_id"] == body["event_ids"][0]
+
+            entities_response = client.get("/api/v1/entities")
+            assert entities_response.status_code == 200
+            entities = entities_response.json()
+            target_entity = next(item for item in entities if item["name"] == "target")
+
+            explain_response = client.get(
+                f"/api/v1/explain/{target_entity['entity_id']}/summary"
+            )
+            assert explain_response.status_code == 200
+            explanation = explain_response.json()
+            assert explanation["history_source"] == "traced_only"
+            assert explanation["summary"] == "Cline modify target.py"
