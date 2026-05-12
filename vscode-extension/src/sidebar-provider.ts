@@ -51,6 +51,7 @@ import type {
     MessageActionViewModel,
     RecentTaskSummaryViewModel,
     RelatedEntityViewModel,
+    ReviewHintViewModel,
     SidebarMessageFromWebview,
     SidebarMessageToWebview,
     SidebarMode,
@@ -419,6 +420,7 @@ export class TailEventsSidebarProvider implements vscode.WebviewViewProvider {
             viewModel.timeline = eventsResult.ok ? buildTimeline(eventsResult.data) : [];
             viewModel.historyAvailable = eventsResult.ok;
             viewModel.historyLoading = false;
+            viewModel.reviewHints = buildReviewHints(viewModel);
         };
 
         const streamPromise = this.apiClient.streamExplanation(
@@ -2634,6 +2636,7 @@ function buildInitialViewModel(
         globalImpactPaths: [],
         globalImpactSummary: null,
         globalImpactEmptyText: "No global paths yet.",
+        reviewHints: [],
         externalDocs: [],
         externalDocsPlaceholder: "暂未接入",
         profile: {
@@ -2670,6 +2673,7 @@ function mergeFinalExplanation(
     viewModel.globalImpactPaths = buildGlobalImpactPaths(explanation);
     viewModel.globalImpactSummary = buildGlobalImpactSummary(explanation);
     viewModel.globalImpactEmptyText = buildGlobalImpactEmptyText(explanation);
+    viewModel.reviewHints = buildReviewHints(viewModel);
     viewModel.externalDocs = buildExternalDocs(explanation);
     viewModel.externalDocsPlaceholder =
         viewModel.externalDocs.length > 0 ? "" : "暂未接入";
@@ -2697,6 +2701,79 @@ function buildTimeline(events: BackendTailEvent[]): TimelineItemViewModel[] {
                 reasoning: event.reasoning ?? null,
             };
         });
+}
+
+function buildReviewHints(viewModel: SidebarViewModel): ReviewHintViewModel[] {
+    const hints: ReviewHintViewModel[] = [];
+    const clineEventCount = viewModel.timeline.filter((item) => {
+        return item.eventId && item.intent.toLowerCase().includes("cline");
+    }).length;
+
+    if (viewModel.summary) {
+        hints.push({
+            id: "explain.summary",
+            category: "explain",
+            severity: "success",
+            title: "Explanation ready",
+            body: viewModel.summary,
+        });
+    } else if (viewModel.summaryPending) {
+        hints.push({
+            id: "explain.pending",
+            category: "explain",
+            severity: "info",
+            title: "Explanation pending",
+            body: "The panel has entity metadata and is waiting for detailed explanation output.",
+        });
+    }
+
+    if (viewModel.globalImpactPaths.length > 0) {
+        const firstPath = viewModel.globalImpactPaths[0];
+        hints.push({
+            id: "impact.path",
+            category: "impact",
+            severity: "info",
+            title: "Impact path detected",
+            body: `${firstPath.direction} path reaches ${firstPath.terminalLabel}. ${firstPath.costLabel}`,
+        });
+    } else if (viewModel.callers.length > 0 || viewModel.callees.length > 0) {
+        hints.push({
+            id: "impact.local",
+            category: "impact",
+            severity: "info",
+            title: "Local relations available",
+            body: `${viewModel.callers.length} caller(s) and ${viewModel.callees.length} callee(s) can guide bounded review.`,
+        });
+    } else {
+        hints.push({
+            id: "impact.none",
+            category: "impact",
+            severity: "warning",
+            title: "No impact edges yet",
+            body: viewModel.globalImpactEmptyText,
+        });
+    }
+
+    if (viewModel.timeline.length > 0) {
+        const latest = viewModel.timeline[0];
+        hints.push({
+            id: "review.timeline",
+            category: "review",
+            severity: clineEventCount > 0 ? "success" : "info",
+            title: clineEventCount > 0 ? "Cline trace linked" : "Timeline linked",
+            body: `${viewModel.timeline.length} event(s) are linked. Latest: ${latest.intent}`,
+        });
+    } else {
+        hints.push({
+            id: "review.no-events",
+            category: "review",
+            severity: "warning",
+            title: "No linked events",
+            body: "Run Cline ingestion or baseline onboarding before relying on review hints.",
+        });
+    }
+
+    return hints;
 }
 
 function buildRelatedEntities(

@@ -543,6 +543,14 @@ export interface ExternalDocViewModel {
     excerpt: string;
 }
 
+export interface ReviewHintViewModel {
+    id: string;
+    category: "explain" | "impact" | "review";
+    severity: "info" | "warning" | "success";
+    title: string;
+    body: string;
+}
+
 export interface SidebarViewModel {
     entityId: string;
     entityName: string;
@@ -567,6 +575,7 @@ export interface SidebarViewModel {
     globalImpactPaths: GlobalImpactPathViewModel[];
     globalImpactSummary: string | null;
     globalImpactEmptyText: string;
+    reviewHints: ReviewHintViewModel[];
     externalDocs: ExternalDocViewModel[];
     externalDocsPlaceholder: string;
     profile: EffectiveProfileViewModel | null;

@@ -32,6 +32,15 @@ class ClineTraceBatchRequest(BaseModel):
     source: Optional[str] = None
 
 
+class ClineGuidanceHint(BaseModel):
+    """Actionable host-side guidance for improving future trace quality."""
+
+    category: str
+    severity: str
+    message: str
+    suggested_action: str
+
+
 class ClineTraceIngestResponse(BaseModel):
     """Summary returned after normalizing and ingesting Cline traces."""
 
@@ -45,6 +54,8 @@ class ClineTraceIngestResponse(BaseModel):
     completion_count: int
     error_count: int
     ingested_count: int
+    guidance_score: int
+    guidance_hints: list[ClineGuidanceHint] = Field(default_factory=list)
     skipped: dict[str, int] = Field(default_factory=dict)
     event_ids: list[str] = Field(default_factory=list)
 
@@ -84,6 +95,18 @@ class ClineConversionResult:
     summary: ClineConversionSummary
     raw_events: list[RawEvent]
     observations: list[dict[str, Any]]
+
+    @property
+    def guidance_score(self) -> int:
+        return build_guidance_score(self.summary)
+
+    @property
+    def guidance_hints(self) -> list[ClineGuidanceHint]:
+        return build_guidance_hints(
+            summary=self.summary,
+            raw_events=self.raw_events,
+            observations=self.observations,
+        )
 
 
 def convert_cline_messages(
@@ -166,6 +189,95 @@ def parse_message_payload(message: dict[str, Any]) -> Optional[dict[str, Any]]:
     except json.JSONDecodeError:
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def build_guidance_score(summary: ClineConversionSummary) -> int:
+    """Return a compact quality score for the host trace batch."""
+
+    score = 100
+    score -= summary.skipped.get("missing_snapshot", 0) * 20
+    score -= summary.skipped.get("tool_payload_not_json", 0) * 15
+    score -= sum(
+        count
+        for reason, count in summary.skipped.items()
+        if reason.startswith("unsupported_tool:")
+    ) * 10
+    score -= summary.skipped.get("partial_message", 0) * 5
+    if summary.file_change_count > 0 and summary.read_observation_count == 0:
+        score -= 10
+    if summary.raw_event_count == 0:
+        score -= 25
+    if summary.completion_count == 0:
+        score -= 5
+    return max(0, min(100, score))
+
+
+def build_guidance_hints(
+    summary: ClineConversionSummary,
+    raw_events: list[RawEvent],
+    observations: list[dict[str, Any]],
+) -> list[ClineGuidanceHint]:
+    """Build host-side hints from conversion evidence."""
+
+    hints: list[ClineGuidanceHint] = []
+    missing_snapshot_count = summary.skipped.get("missing_snapshot", 0)
+    if missing_snapshot_count:
+        hints.append(
+            ClineGuidanceHint(
+                category="capture",
+                severity="warning",
+                message=f"{missing_snapshot_count} file-change tool message(s) had no readable snapshot.",
+                suggested_action="Include final file content in Cline tool payloads when the file is missing or deleted.",
+            )
+        )
+
+    unsupported_count = sum(
+        count
+        for reason, count in summary.skipped.items()
+        if reason.startswith("unsupported_tool:")
+    )
+    if unsupported_count:
+        hints.append(
+            ClineGuidanceHint(
+                category="normalization",
+                severity="info",
+                message=f"{unsupported_count} tool message(s) were observed but not converted into TailEvents.",
+                suggested_action="Map only file-changing tools to events and keep read-only tools as observations.",
+            )
+        )
+
+    if summary.file_change_count > 0 and not observations:
+        hints.append(
+            ClineGuidanceHint(
+                category="context",
+                severity="info",
+                message="File changes were captured without read observations.",
+                suggested_action="Emit readFile observations before edits so review hints can explain what evidence Cline inspected.",
+            )
+        )
+
+    if raw_events:
+        event_count = len(raw_events)
+        file_count = len({event.file_path for event in raw_events})
+        hints.append(
+            ClineGuidanceHint(
+                category="review",
+                severity="success",
+                message=f"{event_count} normalized TailEvent(s) are ready for indexing across {file_count} file(s).",
+                suggested_action="Open the sibling TailEvents panel to review explain, impact, and timeline evidence.",
+            )
+        )
+    else:
+        hints.append(
+            ClineGuidanceHint(
+                category="capture",
+                severity="warning",
+                message="No file-change TailEvents were produced from this Cline batch.",
+                suggested_action="Verify that Cline emitted final file-change tool messages with path and content or an accessible workspace file.",
+            )
+        )
+
+    return hints
 
 
 def to_raw_event(
@@ -270,10 +382,13 @@ def _line_range_for(payload: dict[str, Any], snapshot: str) -> Optional[tuple[in
 
 
 __all__ = [
+    "ClineGuidanceHint",
     "ClineConversionResult",
     "ClineConversionSummary",
     "ClineTraceBatchRequest",
     "ClineTraceIngestResponse",
+    "build_guidance_hints",
+    "build_guidance_score",
     "convert_cline_messages",
     "parse_message_payload",
     "step_id",

@@ -177,6 +177,39 @@ export function ExplainView() {
             </CollapsibleCard>
 
             <CollapsibleCard
+                id="explain.reviewHints"
+                title="Review Hints"
+                description="Explain, impact, and review cues from the wrapper trace."
+                open={!state.persisted.collapsedPanels["explain.reviewHints"]}
+                onOpenChange={(open) => actions.setPanelCollapsed("explain.reviewHints", !open)}
+            >
+                {data.reviewHints.length === 0 ? (
+                    <p className="text-sm text-[var(--te-muted)]">No review hints yet.</p>
+                ) : (
+                    <div className="grid gap-3 xl:grid-cols-3">
+                        {data.reviewHints.map((hint) => {
+                            return (
+                                <div
+                                    key={hint.id}
+                                    className="min-w-0 rounded-[12px] border border-[var(--te-border)] bg-[var(--te-bg)] p-3"
+                                >
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        <Badge variant={hint.severity === "warning" ? "warning" : hint.severity === "success" ? "accent" : "subtle"}>
+                                            {hint.category}
+                                        </Badge>
+                                        <span className="text-sm font-semibold">{hint.title}</span>
+                                    </div>
+                                    <p className="mt-2 text-sm leading-6 text-[var(--te-muted)]">
+                                        {hint.body}
+                                    </p>
+                                </div>
+                            );
+                        })}
+                    </div>
+                )}
+            </CollapsibleCard>
+
+            <CollapsibleCard
                 id="explain.docs"
                 title="Docs And Timeline"
                 description="External docs and event timeline stay first-class in TailEvents."

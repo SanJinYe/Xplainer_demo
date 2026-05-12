@@ -47,6 +47,8 @@ async def ingest_cline_events(
         completion_count=summary.completion_count,
         error_count=summary.error_count,
         ingested_count=len(ingested_events),
+        guidance_score=conversion.guidance_score,
+        guidance_hints=conversion.guidance_hints,
         skipped=dict(summary.skipped),
         event_ids=[event.event_id for event in ingested_events],
     )

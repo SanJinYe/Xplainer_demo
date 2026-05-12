@@ -49,6 +49,7 @@ export interface WebviewAppState {
 const EXPLAIN_PANEL_IDS = [
     "explain.summary",
     "explain.relations",
+    "explain.reviewHints",
     "explain.docs",
 ] as const;
 
